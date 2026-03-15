@@ -137,7 +137,15 @@ NodeMCU ESP8266          SSR
 
 1. **Touch Accuracy**: Single ADC may reduce touchscreen precision
 2. **K-Type Only**: MAX31855 only supports K-type thermocouples (should be fine for solder reflow)
-3. **Pin Sharing**: Some touch pins share with SPI (may cause conflicts during SPI communication)
+3. **Pin Sharing Critical Issue**: XP touch pin (D7/GPIO13) shares with SPI MOSI
+   - Touch readings will be unreliable during SPI communication with TFT or thermocouple
+   - The touch screen will NOT work reliably during active reflow when the display is updating
+   - **Recommended Solutions**:
+     - Replace resistive touch with I2C capacitive touch display
+     - Use physical buttons connected to unused GPIO pins
+     - Use rotary encoder with push button for menu navigation
+     - Use web interface over WiFi (ESP8266 has built-in WiFi capability)
+4. **XM Pin**: Using digital pin D3 for XM instead of analog may affect touch calibration
 
 ## Troubleshooting
 
@@ -145,11 +153,14 @@ NodeMCU ESP8266          SSR
 - Check wiring: CLK, CS, DO connections
 - Ensure thermocouple is properly connected to MAX31855
 - Verify 3.3V power supply is stable
+- During reflow, if thermocouple fails, the system will automatically shut down the SSR and display an error
 
-### Touch Screen Not Working
-- ESP8266's single ADC may cause issues
+### Touch Screen Not Working or Unreliable
+- ESP8266's single ADC may cause reduced accuracy
+- **Primary Issue**: Touch readings conflict with SPI during display updates
+- Touch may work during setup menu but fail during active reflow
 - Verify touch pins are correctly connected
-- Consider using capacitive touch alternative
+- **Solution**: Consider replacing with capacitive touch, physical buttons, or web interface
 
 ### SSR Not Switching
 - Verify SSR supports 3.3V logic input
@@ -163,8 +174,9 @@ NodeMCU ESP8266          SSR
 
 ## Future Improvements
 
-1. Add web interface for WiFi control (ESP8266 has built-in WiFi)
-2. Store reflow profiles in SPIFFS
-3. Remote monitoring via MQTT or HTTP
-4. Replace resistive touch with capacitive touch or rotary encoder
+1. **RECOMMENDED**: Replace resistive touch with alternative input method (I2C capacitive touch, physical buttons, or web interface)
+2. Add web interface for WiFi control (ESP8266 has built-in WiFi)
+3. Store reflow profiles in SPIFFS or EEPROM
+4. Remote monitoring via MQTT or HTTP
 5. Add temperature data logging to SD card or cloud
+6. Use I2C ADC (ADS1115) to properly support resistive touch with 2 analog inputs

@@ -1,18 +1,20 @@
 // NodeMCU ESP8266 Pin Definitions
 // ESP8266 Hardware SPI: MOSI=D7(GPIO13), MISO=D6(GPIO12), CLK=D5(GPIO14)
-#define THERMO_CLK D5   // GPIO14 - SPI Clock
+#define THERMO_CLK D5   // GPIO14 - SPI Clock (shared with TFT)
 #define THERMO_CS D4    // GPIO2 - Chip Select
-#define THERMO_DO D6    // GPIO12 - MISO/Data Out
+#define THERMO_DO D6    // GPIO12 - MISO/Data Out (shared with TFT)
 #define SSR_PIN D8      // GPIO15 - Solid State Relay control
 #define TFT_CS D1       // GPIO5 - TFT Chip Select
 #define TFT_DC D2       // GPIO4 - TFT Data/Command
 #define TFT_RST -1      // RST can be set to -1 if you tie it to ESP8266's reset
 // Note the X and Y pin numbers are opposite from what is printed on the TFT display. This was done to align with the screen rotation.
-// ESP8266 has only one ADC (A0), so we use a workaround for the second analog reading
+// WARNING: ESP8266 has only one ADC (A0). TouchScreen library expects 2 analog pins.
+// This configuration uses A0 for YP and a digital pin for XM, which may reduce touch accuracy.
+// For production use, consider: 1) I2C ADC (ADS1115), 2) Capacitive touch, or 3) Rotary encoder input
 #define YP A0   // must be an analog pin, use "An" notation!
-#define XM D3   // GPIO0 - Using digital pin (will require modified touch reading)
+#define XM D3   // GPIO0 - Using digital pin (TouchScreen library may have reduced accuracy)
 #define YM D0   // GPIO16 - can be a digital pin  
-#define XP D7   // GPIO13 - can be a digital pin (shared with MOSI)
+#define XP D7   // GPIO13 - WARNING: shared with SPI MOSI (touch may be unreliable during SPI operations)
 // This is calibration data for the raw touch data to the screen coordinates
 #define TS_MINX 190
 #define TS_MINY 400
@@ -278,10 +280,19 @@ void loop() {
       // Read temperature directly
       Serial.print("\tSetpoint:"); Serial.print(Setpoint);
       Input = maxthermo.readCelsius();
-      // Check for errors
+      // Check for errors - CRITICAL: halt reflow if thermocouple fails
       if (isnan(Input)) {
-        Serial.println("\tThermocouple read error!");
-        Input = 0; // Use safe default
+        Serial.println("\n!!! THERMOCOUPLE READ ERROR !!!");
+        Serial.println("EMERGENCY SHUTDOWN - Turning off SSR");
+        digitalWrite(SSR_PIN, LOW); // Turn off heater immediately
+        tft.fillScreen(HX8357_RED);
+        tft.setCursor(10, 150);
+        tft.setTextColor(HX8357_WHITE);
+        tft.setTextSize(3);
+        tft.println("THERMOCOUPLE ERROR!");
+        tft.println("Check wiring");
+        reflowMenu = false; // Exit reflow loop
+        break;
       } else {
         Serial.print("\tInput:"); Serial.print(Input);
         myPID.Compute();
