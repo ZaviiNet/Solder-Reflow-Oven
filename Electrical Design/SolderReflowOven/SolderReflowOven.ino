@@ -264,6 +264,15 @@ void setupWiFi() {
   }
 }
 
+// Forward declarations for web server handler functions
+void handleRoot();
+void handleStatus();
+void handleGetConfig();
+void handleSetConfig();
+void handleStart();
+void handleStop();
+void handleDataLog();
+
 void setupWebServer() {
   // Serve main page
   server.on("/", HTTP_GET, handleRoot);
