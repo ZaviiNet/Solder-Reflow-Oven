@@ -63,7 +63,7 @@ double Kp = 2, Ki = 5, Kd = 1;
 PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 
 // EEPROM Configuration
-#define EEPROM_SIZE 512
+#define EEPROM_SIZE 512  // Allocate 512 bytes (actual usage ~92 bytes, extra space for future expansion)
 #define EEPROM_MAGIC 0xABCD  // Magic number to verify valid EEPROM data
 
 struct EEPROMConfig {
@@ -809,14 +809,15 @@ void handleRoot() {
       chartData.datasets[0].data.push(temp);
       chartData.datasets[1].data.push(setpoint);
       
-      // Keep only last 300 points (5 minutes at 1Hz)
+      // Keep only last 300 points (5 minutes at 1 sample/second WebSocket update rate)
       if (chartData.labels.length > 300) {
         chartData.labels.shift();
         chartData.datasets[0].data.shift();
         chartData.datasets[1].data.shift();
       }
       
-      chart.update('none'); // Update without animation for better performance
+      // Update chart without animation ('none' mode) for better real-time performance
+      chart.update('none');
     }
     
     function clearChart() {
