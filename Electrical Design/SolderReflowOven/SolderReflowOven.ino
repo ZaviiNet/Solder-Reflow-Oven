@@ -1,589 +1,789 @@
-#define THERMO_CS 8
-#define SSR_PIN 2
-#define TFT_CS 10
-#define TFT_DC 9
-#define TFT_RST -1 // RST can be set to -1 if you tie it to Arduino's reset
-// Note the X and Y pin numbers are opposite from what is printed on the TFT display. This was done to align with the screen rotation.
-#define YP A0  // must be an analog pin, use "An" notation!
-#define XM A1  // must be an analog pin, use "An" notation!
-#define YM 7   // can be a digital pin
-#define XP 6   // can be a digital pin
-// This is calibration data for the raw touch data to the screen coordinates
-#define TS_MINX 190
-#define TS_MINY 400
-#define TS_MAXX 890
-#define TS_MAXY 820
+/*
+ * Solder Reflow Oven Controller - ESP8266 Web Interface Version
+ * 
+ * Hardware:
+ * - NodeMCU 1.0 ESP12E (ESP8266)
+ * - Adafruit MAX31855 K-Type Thermocouple Amplifier
+ * - Solid State Relay (SSR) for heater control
+ * 
+ * Features:
+ * - Web-based interface (no display required)
+ * - WiFi connectivity with AP and Station modes
+ * - Real-time temperature monitoring via WebSocket
+ * - PID-controlled reflow profile
+ * - Emergency stop functionality
+ * 
+ * Pin Connections:
+ * - D5 (GPIO14): MAX31855 CLK
+ * - D4 (GPIO2):  MAX31855 CS
+ * - D6 (GPIO12): MAX31855 DO (MISO)
+ * - D8 (GPIO15): SSR Control
+ */
 
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <WebSocketsServer.h>
 #include <PID_v1.h>
-#include <Adafruit_MAX31856.h>
+#include <Adafruit_MAX31855.h>
 #include <SPI.h>
-#include "Adafruit_GFX.h"
-#include <Fonts/FreeMonoBold12pt7b.h>
-#include <Fonts/FreeMonoBold18pt7b.h>
-#include "Adafruit_HX8357.h"
-#include <stdint.h>
-#include "TouchScreen.h"
+#include <ArduinoJson.h>
 
-// Use hardware SPI (on Uno, #13, #12, #11) and the above for CS/DC
-Adafruit_HX8357 tft = Adafruit_HX8357(TFT_CS, TFT_DC, TFT_RST);
-// SoftSPI - note that on some processors this might be *faster* than hardware SPI!
-//Adafruit_HX8357 tft = Adafruit_HX8357(TFT_CS, TFT_DC, SOFT_MOSI, SOFT_CLK, TFT_RST, SOFT_MISO);
-const int displayWidth = 480, displayHeight = 320;
-const int gridSize = 80;
-// For better pressure precision, we need to know the resistance
-// between X+ and X- Use any multimeter to read it
-// For the one we're using, its 300 ohms across the X plate
-TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
-TSPoint touchpoint = ts.getPoint();
-bool setupMenu = false, editMenu = false, reflowMenu = false;
-const int touchHoldLimit = 500;
+// Pin Definitions
+#define THERMO_CLK D5   // GPIO14
+#define THERMO_CS D4    // GPIO2
+#define THERMO_DO D6    // GPIO12
+#define SSR_PIN D8      // GPIO15
 
-// use hardware SPI, just pass in the CS pin
-Adafruit_MAX31856 maxthermo = Adafruit_MAX31856(THERMO_CS);
-// Use software SPI: CS, DI, DO, CLK
-//Adafruit_MAX31856 maxthermo = Adafruit_MAX31856(THERMO_CS, SOFT_MOSI, SOFT_MISO, SOFT_CLK);
+// WiFi Configuration - Change these to your network or leave for AP mode
+const char* ssid = "ReflowOven";           // AP mode SSID
+const char* password = "reflow123";         // AP mode password (min 8 chars)
+bool useAPMode = true;                      // Set to false to connect to existing WiFi
 
-unsigned long timeSinceReflowStarted;
-unsigned long timeTempCheck = 1000;
-unsigned long lastTimeTempCheck = 0;
-double preheatTemp = 180, soakTemp = 150, reflowTemp = 230, cooldownTemp = 25;
-unsigned long preheatTime = 120000, soakTime = 60000, reflowTime = 120000, cooldownTime = 120000, totalTime = preheatTime + soakTime + reflowTime + cooldownTime;
-bool preheating = false, soaking = false, reflowing = false, coolingDown = false, newState = false;
-uint16_t gridColor = 0x7BEF;
-uint16_t preheatColor = HX8357_RED, soakColor = 0xFBE0,   reflowColor = 0xDEE0,   cooldownColor = HX8357_BLUE; // colors for plotting
-uint16_t preheatColor_d = 0xC000,   soakColor_d = 0xC2E0, reflowColor_d = 0xC600, cooldownColor_d =  0x0018; // desaturated colors
+// Web Server and WebSocket
+ESP8266WebServer server(80);
+WebSocketsServer webSocket(81);
 
-// Define Variables we'll be connecting to
-double Setpoint, Input, Output;
+// MAX31855 Thermocouple
+Adafruit_MAX31855 maxthermo = Adafruit_MAX31855(THERMO_CLK, THERMO_CS, THERMO_DO);
 
+// Reflow Profile Parameters (in Celsius and milliseconds)
+double preheatTemp = 150;
+double soakTemp = 180;
+double reflowTemp = 230;
+double cooldownTemp = 25;
+unsigned long preheatTime = 90000;    // 90 seconds
+unsigned long soakTime = 90000;       // 90 seconds
+unsigned long reflowTime = 40000;     // 40 seconds
+unsigned long cooldownTime = 60000;   // 60 seconds
 
-// Specify the links and initial tuning parameters
-double Kp=2, Ki=5, Kd=1;
+// PID Variables
+double Setpoint = 0, Input = 0, Output = 0;
+double Kp = 2, Ki = 5, Kd = 1;
 PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 
+// State Machine
+enum ReflowState {
+  IDLE,
+  PREHEAT,
+  SOAK,
+  REFLOW,
+  COOLDOWN,
+  COMPLETE,
+  ERROR_STATE
+};
+
+ReflowState currentState = IDLE;
+String stateNames[] = {"IDLE", "PREHEAT", "SOAK", "REFLOW", "COOLDOWN", "COMPLETE", "ERROR"};
+
+// Timing
+unsigned long reflowStartTime = 0;
+unsigned long stateStartTime = 0;
+unsigned long lastTempCheck = 0;
+unsigned long tempCheckInterval = 1000;  // Check temperature every 1 second
+
+// Safety
+bool emergencyStop = false;
+int thermocoupleErrorCount = 0;
+const int maxThermocoupleErrors = 3;
+
+// Data logging
+struct DataPoint {
+  unsigned long time;
+  double temperature;
+  double setpoint;
+  ReflowState state;
+};
+
+const int maxDataPoints = 500;
+DataPoint dataLog[maxDataPoints];
+int dataLogIndex = 0;
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial)
-    delay(10);
-  Serial.println("Solder Reflow Oven");
   delay(100);
-  tft.begin();
-  tft.setRotation(1);
-  tft.fillScreen(HX8357_BLACK);
-  tft.setCursor(0,0);
-  tft.setTextSize(1);
+  Serial.println("\n\n=================================");
+  Serial.println("Solder Reflow Oven Controller");
+  Serial.println("ESP8266 + MAX31855 + Web Interface");
+  Serial.println("=================================\n");
 
-
-  if (!maxthermo.begin()) {
-    Serial.println("Could not initialize thermocouple.");
-    while (1) delay(10);
-  }
-
-  maxthermo.setThermocoupleType(MAX31856_TCTYPE_K);
-
-  /*
-  Serial.print("Thermocouple type: ");
-  switch (maxthermo.getThermocoupleType() ) {
-    case MAX31856_TCTYPE_B: Serial.println("B Type"); break;
-    case MAX31856_TCTYPE_E: Serial.println("E Type"); break;
-    case MAX31856_TCTYPE_J: Serial.println("J Type"); break;
-    case MAX31856_TCTYPE_K: Serial.println("K Type"); break;
-    case MAX31856_TCTYPE_N: Serial.println("N Type"); break;
-    case MAX31856_TCTYPE_R: Serial.println("R Type"); break;
-    case MAX31856_TCTYPE_S: Serial.println("S Type"); break;
-    case MAX31856_TCTYPE_T: Serial.println("T Type"); break;
-    case MAX31856_VMODE_G8: Serial.println("Voltage x8 Gain mode"); break;
-    case MAX31856_VMODE_G32: Serial.println("Voltage x8 Gain mode"); break;
-    default: Serial.println("Unknown"); break;
-  }
-  */
-
-  maxthermo.setConversionMode(MAX31856_ONESHOT_NOWAIT);
-
-  Setpoint = cooldownTemp;
-  // tell the PID to range between 0 and the full window size
-  myPID.SetOutputLimits(0, 1);
-
-  // turn the PID on
-  myPID.SetMode(AUTOMATIC);
-
+  // Initialize SSR pin
   pinMode(SSR_PIN, OUTPUT);
-  digitalWrite(SSR_PIN,LOW);
+  digitalWrite(SSR_PIN, LOW);
+  Serial.println("SSR pin initialized (OFF)");
 
+  // Initialize MAX31855
+  Serial.println("Initializing MAX31855 thermocouple...");
+  delay(500);
+  double testTemp = maxthermo.readCelsius();
+  if (isnan(testTemp)) {
+    Serial.println("ERROR: Could not read from thermocouple!");
+    Serial.println("Check wiring and connections.");
+    currentState = ERROR_STATE;
+  } else {
+    Serial.print("MAX31855 OK - Current temp: ");
+    Serial.print(testTemp);
+    Serial.println(" °C");
+  }
 
+  // Initialize PID
+  myPID.SetOutputLimits(0, 1);
+  myPID.SetMode(AUTOMATIC);
+  Serial.println("PID controller initialized");
+
+  // Setup WiFi
+  setupWiFi();
+
+  // Setup web server routes
+  setupWebServer();
+
+  // Start WebSocket server
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
+  Serial.println("WebSocket server started on port 81");
+
+  Serial.println("\n=================================");
+  Serial.println("Setup complete!");
+  Serial.println("=================================\n");
+}
+
+void setupWiFi() {
+  WiFi.mode(WIFI_AP_STA);
+  
+  if (useAPMode) {
+    Serial.println("Starting WiFi Access Point...");
+    WiFi.softAP(ssid, password);
+    IPAddress IP = WiFi.softAPIP();
+    Serial.print("AP SSID: ");
+    Serial.println(ssid);
+    Serial.print("AP IP address: ");
+    Serial.println(IP);
+    Serial.println("Connect to this network and navigate to http://" + IP.toString());
+  } else {
+    Serial.print("Connecting to WiFi: ");
+    Serial.println(ssid);
+    WiFi.begin(ssid, password);
+    
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500);
+      Serial.print(".");
+      attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\nWiFi connected!");
+      Serial.print("IP address: ");
+      Serial.println(WiFi.localIP());
+    } else {
+      Serial.println("\nWiFi connection failed! Starting AP mode...");
+      WiFi.softAP(ssid, password);
+      Serial.print("AP IP: ");
+      Serial.println(WiFi.softAPIP());
+    }
+  }
+}
+
+void setupWebServer() {
+  // Serve main page
+  server.on("/", HTTP_GET, handleRoot);
+  
+  // API endpoints
+  server.on("/api/status", HTTP_GET, handleStatus);
+  server.on("/api/config", HTTP_GET, handleGetConfig);
+  server.on("/api/config", HTTP_POST, handleSetConfig);
+  server.on("/api/start", HTTP_POST, handleStart);
+  server.on("/api/stop", HTTP_POST, handleStop);
+  server.on("/api/data", HTTP_GET, handleDataLog);
+  
+  server.begin();
+  Serial.println("HTTP server started on port 80");
 }
 
 void loop() {
-  digitalWrite(SSR_PIN,LOW);
-  ///* Setup Menu *///
-  tft.fillScreen(HX8357_BLACK);
-  drawSetupMenu();
-  setupMenu = true;
-  Serial.println("Setup Menu");
-  while(setupMenu){
-    touchpoint = ts.getPoint();
-    if(touchpoint.z > ts.pressureThreshhold){
-      int setupMenuXPos = getGridCellX(), setupMenuYPos = getGridCellY();
-      Serial.print("Setup menu touch: ("); Serial.print(setupMenuXPos); Serial.print(","); Serial.print(setupMenuYPos); Serial.print(") -> ");
-      if(setupMenuYPos < 3){ // Somewhere other than the start button
-        editMenu = true;
-        bool editingPreheat = false, editingSoak = false, editingReflow = false;
-        if(setupMenuXPos < 2 ){ // Somwhere within the preheat zone
-          editingPreheat = true;
-          tft.fillScreen(preheatColor);
-          Serial.println("Edit Preheat Menu");
-          drawEditMenu("Preheat");
-          centerText(2,0,1,1,HX8357_WHITE,String(int(preheatTemp)));
-          centerText(5,0,1,1,HX8357_WHITE, formatTime(preheatTime));
-        }
-        else if(setupMenuXPos > 3 ){// Somwhere within the reflow zone
-          editingReflow = true;
-          tft.fillScreen(reflowColor);
-          Serial.println("Edit Reflow Menu");
-          drawEditMenu("Reflow");
-          centerText(2,0,1,1,HX8357_WHITE,String(int(reflowTemp)));
-          centerText(5,0,1,1,HX8357_WHITE, formatTime(reflowTime));
-        }
-        else{ // Somwhere within the soak zone
-          editingSoak = true;
-          tft.fillScreen(soakColor);
-          Serial.println("Edit Soak Menu");
-          drawEditMenu("Soak");
-          centerText(2,0,1,1,HX8357_WHITE,String(int(soakTemp)));
-          centerText(5,0,1,1,HX8357_WHITE, formatTime(soakTime));
-        }
-        while(editMenu){// Stay in this loop until the save button is pressed
-          touchpoint = ts.getPoint();
-          if(touchpoint.z > ts.pressureThreshhold){
-            int editMenuXPos = getGridCellX(), editMenuYPos = getGridCellY();
-            Serial.print("Edit menu touch at ("); Serial.print(editMenuXPos); Serial.print(","); Serial.print(editMenuYPos); Serial.print(") -> ");
-            if(editMenuYPos == 1){ // One of the up arrows was pressed
-              if(editMenuXPos < 3){ // The Temp up arrow was pressed
-                Serial.println("Temp up arrow");
-                tft.fillRoundRect(2*gridSize+2, 0*gridSize+2, gridSize-4, gridSize-4, 10, HX8357_BLACK);
-                if(editingPreheat){
-                  if(preheatTemp < 300);
-                    preheatTemp += 10;
-                  centerText(2,0,1,1,HX8357_WHITE,String(int(preheatTemp)));
-                }
-                if(editingSoak){
-                  if(soakTemp < 300);
-                    soakTemp += 10;
-                  centerText(2,0,1,1,HX8357_WHITE,String(int(soakTemp)));
-                }
-                if(editingReflow){
-                  if(reflowTemp < 300);
-                    reflowTemp += 10;
-                  centerText(2,0,1,1,HX8357_WHITE,String(int(reflowTemp)));
-                }
-              }
-              else{// The Time up arrow was pressed
-                Serial.println("Time up arrow");
-                tft.fillRoundRect(5*gridSize+2, 0*gridSize+2, gridSize-4, gridSize-4, 10, HX8357_BLACK);
-                if(editingPreheat){
-                  if(preheatTime < 300000)
-                    preheatTime += 10000;
-                  centerText(5,0,1,1,HX8357_WHITE, formatTime(preheatTime));
-                }
-                if(editingSoak){
-                  if(soakTime < 300000)
-                    soakTime += 10000;
-                  centerText(5,0,1,1,HX8357_WHITE, formatTime(soakTime));
-                }
-                if(editingReflow){
-                  if(reflowTime < 300000)
-                    reflowTime += 10000;
-                  centerText(5,0,1,1,HX8357_WHITE, formatTime(reflowTime));
-                }
-              }
-            }
-            else if(editMenuYPos == 2){// One of the down arrows was pressed
-              if(editMenuXPos < 3){ // The Temp down arrow was pressed
-                Serial.println("Temp down arrow");
-                tft.fillRoundRect(2*gridSize+2, 0*gridSize+2, gridSize-4, gridSize-4, 10, HX8357_BLACK);
-                if(editingPreheat){
-                  if(preheatTemp > 100)
-                    preheatTemp -= 10;
-                  centerText(2,0,1,1,HX8357_WHITE,String(int(preheatTemp)));
-                }
-                if(editingSoak){
-                  if(soakTemp > 100)
-                    soakTemp -= 10;
-                  centerText(2,0,1,1,HX8357_WHITE,String(int(soakTemp)));
-                }
-                if(editingReflow){
-                  if(reflowTemp > 100)
-                    reflowTemp -= 10;
-                  centerText(2,0,1,1,HX8357_WHITE,String(int(reflowTemp)));
-                }
-              }
-              else{// The Time down arrow was pressed
-                Serial.println("Time down arrow");
-                tft.fillRoundRect(5*gridSize+2, 0*gridSize+2, gridSize-4, gridSize-4, 10, HX8357_BLACK);
-                if(editingPreheat){
-                  if(preheatTime > 30000)
-                    preheatTime -= 10000;
-                  centerText(5,0,1,1,HX8357_WHITE, formatTime(preheatTime));
-                }
-                else if(editingSoak){
-                  if(soakTime > 30000)
-                    soakTime -= 10000;
-                  centerText(5,0,1,1,HX8357_WHITE, formatTime(soakTime));
-                }
-                else if(editingReflow){
-                  if(reflowTime > 30000)
-                    reflowTime -= 10000;
-                  centerText(5,0,1,1,HX8357_WHITE, formatTime(reflowTime));
-                }
-              }
-            }
-            else if(editMenuYPos == 3){ // Save button was pressed
-              Serial.println("Save button");
-              tft.fillScreen(HX8357_BLACK);
-              drawSetupMenu();
-              editMenu = false;
-            }
-            delay(touchHoldLimit); // so holding the button down doesn't read multiple presses
-          }
-        }
-      }
-      else{// Start button was pressed
-        Serial.println("Start button");
-        setupMenu = false;
-      }
-      delay(touchHoldLimit); // so holding the button down doesn't read multiple presses
+  server.handleClient();
+  webSocket.loop();
+  
+  // Read temperature periodically
+  unsigned long currentTime = millis();
+  if (currentTime - lastTempCheck >= tempCheckInterval) {
+    lastTempCheck = currentTime;
+    readTemperature();
+    
+    // Update state machine if reflow is active
+    if (currentState != IDLE && currentState != COMPLETE && currentState != ERROR_STATE) {
+      updateReflowStateMachine();
     }
+    
+    // Send status update via WebSocket
+    sendWebSocketUpdate();
+    
+    // Log data point
+    logDataPoint();
   }
-  ///* Reflow Menu *///
-  tft.fillScreen(HX8357_BLACK);
-  drawReflowMenu();
-  drawButton(0,3,2,1, HX8357_GREEN, HX8357_WHITE, "Start");
-  bool start = false;
-  while(!start){
-    touchpoint = ts.getPoint();
-    if(touchpoint.z > ts.pressureThreshhold){
-      if(getGridCellX() <2 && getGridCellY() == 3){
-        start = true;
-      }
-      delay(touchHoldLimit); // so holding the button down doesn't read multiple presses
+}
+
+void readTemperature() {
+  Input = maxthermo.readCelsius();
+  
+  if (isnan(Input)) {
+    thermocoupleErrorCount++;
+    Serial.println("WARNING: Thermocouple read error!");
+    
+    if (thermocoupleErrorCount >= maxThermocoupleErrors) {
+      Serial.println("CRITICAL: Multiple thermocouple errors - EMERGENCY STOP!");
+      emergencyStopReflow();
+      currentState = ERROR_STATE;
     }
+  } else {
+    thermocoupleErrorCount = 0;  // Reset error counter on successful read
   }
-  drawButton(0,3,2,1, HX8357_RED, HX8357_WHITE, "Stop");
-  Serial.println("Reflow Menu");
-  unsigned long reflowStarted = millis();
-  reflowMenu = true;
-  while(reflowMenu){
-    timeSinceReflowStarted = millis() - reflowStarted;
-    if(timeSinceReflowStarted - lastTimeTempCheck > timeTempCheck){
-      lastTimeTempCheck = timeSinceReflowStarted;
-      printState();
-      // check for conversion complete and read temperature
-      if (maxthermo.conversionComplete()) {
-        Serial.print("\tSetpoint:"); Serial.print(Setpoint);
-        Input = maxthermo.readThermocoupleTemperature();
-        Serial.print("\tInput:"); Serial.print(Input);
-        myPID.Compute();
-        if(Output < 0.5){
-          digitalWrite(SSR_PIN,LOW);
-        }
-        if(Output > 0.5){
-          digitalWrite(SSR_PIN,HIGH);
-        }
-        Serial.print("\tOutput:"); Serial.println(Output);
-        plotDataPoint();
-      }
-      else {
-        Serial.println("\tConversion not complete!");
-      }
-      // trigger a conversion, returns immediately
-      maxthermo.triggerOneShot();
-    }
-    if(timeSinceReflowStarted > totalTime){
-      reflowMenu = false;
-    }
-    else if(timeSinceReflowStarted > (preheatTime + soakTime + reflowTime)){ // preheat and soak and reflow are complete. Start cooldown
-      if(!coolingDown){
-        newState = true;
-        preheating = false, soaking = false, reflowing = false, coolingDown = true;
-      }
-      Setpoint = cooldownTemp;
-    }
-    else if(timeSinceReflowStarted > (preheatTime + soakTime)){ // preheat and soak are complete. Start reflow
-      if(!reflowing){
-        newState = true;
-        preheating = false, soaking = false, reflowing = true, coolingDown = false;
-      }
-      Setpoint = reflowTemp;
-    }
-    else if(timeSinceReflowStarted > preheatTime){ // preheat is complete. Start soak
-      if(!soaking){
-        newState = true;
-        preheating = false, soaking = true, reflowing = false, coolingDown = false;
-      }
-      Setpoint = soakTemp;
-    }
-    else{ // cycle is starting. Start preheat
-      if(!preheating){
-        newState = true;
-        preheating = true, soaking = false, reflowing = false, coolingDown = false;
-      }
+}
+
+void updateReflowStateMachine() {
+  if (emergencyStop) {
+    return;
+  }
+  
+  unsigned long elapsedTime = millis() - reflowStartTime;
+  unsigned long stateElapsed = millis() - stateStartTime;
+  
+  switch (currentState) {
+    case PREHEAT:
       Setpoint = preheatTemp;
-    }
-    touchpoint = ts.getPoint();
-    if(touchpoint.z > ts.pressureThreshhold){
-      if(getGridCellX() < 2 && getGridCellY() == 3){
-        reflowMenu = false;
+      if (stateElapsed >= preheatTime) {
+        changeState(SOAK);
       }
-      delay(touchHoldLimit); // so holding the button down doesn't read multiple presses
-    }
-  }
-  drawButton(0,3,2,1, HX8357_GREEN, HX8357_WHITE, "Done");
-  bool done = false;
-  while(!done){
-    touchpoint = ts.getPoint();
-    if(touchpoint.z > ts.pressureThreshhold){
-      if(getGridCellX() < 2 && getGridCellY() == 3){
-        done = true;
+      break;
+      
+    case SOAK:
+      Setpoint = soakTemp;
+      if (stateElapsed >= soakTime) {
+        changeState(REFLOW);
       }
-      delay(touchHoldLimit); // so holding the button down doesn't read multiple presses
+      break;
+      
+    case REFLOW:
+      Setpoint = reflowTemp;
+      if (stateElapsed >= reflowTime) {
+        changeState(COOLDOWN);
+      }
+      break;
+      
+    case COOLDOWN:
+      Setpoint = cooldownTemp;
+      digitalWrite(SSR_PIN, LOW);  // Force heater off during cooldown
+      if (Input <= cooldownTemp + 10 || stateElapsed >= cooldownTime) {
+        changeState(COMPLETE);
+      }
+      break;
+      
+    case COMPLETE:
+      Setpoint = cooldownTemp;
+      digitalWrite(SSR_PIN, LOW);
+      break;
+  }
+  
+  // Run PID (only during active heating states, not during cooldown, complete, or error)
+  if (currentState != COOLDOWN && currentState != COMPLETE && currentState != ERROR_STATE) {
+    myPID.Compute();
+    
+    // Control SSR based on PID output
+    if (Output > 0.5) {
+      digitalWrite(SSR_PIN, HIGH);
+    } else {
+      digitalWrite(SSR_PIN, LOW);
     }
+  } else {
+    // Ensure SSR is off in safe states
+    digitalWrite(SSR_PIN, LOW);
+  }
+  
+  // Print status
+  Serial.print(stateNames[currentState]);
+  Serial.print(" | Time: ");
+  Serial.print(stateElapsed / 1000);
+  Serial.print("s | Temp: ");
+  Serial.print(Input);
+  Serial.print("°C | Setpoint: ");
+  Serial.print(Setpoint);
+  Serial.print("°C | Output: ");
+  Serial.print(Output);
+  Serial.print(" | SSR: ");
+  Serial.println(digitalRead(SSR_PIN) ? "ON" : "OFF");
+}
+
+void changeState(ReflowState newState) {
+  Serial.print("State change: ");
+  Serial.print(stateNames[currentState]);
+  Serial.print(" -> ");
+  Serial.println(stateNames[newState]);
+  
+  currentState = newState;
+  stateStartTime = millis();
+}
+
+void startReflow() {
+  if (currentState == IDLE || currentState == COMPLETE || currentState == ERROR_STATE) {
+    Serial.println("Starting reflow process...");
+    emergencyStop = false;
+    thermocoupleErrorCount = 0;
+    reflowStartTime = millis();
+    dataLogIndex = 0;  // Reset data log
+    changeState(PREHEAT);
   }
 }
 
-void printState(){
-  String time = formatTime(timeSinceReflowStarted);
-  Serial.print("Current time: "); Serial.print(time); Serial.print("\t");
-  tft.fillRoundRect(5*gridSize+2, 3*gridSize+2, gridSize-4, gridSize-4, 10, HX8357_BLACK);
-  centerText(5,3,1,1,0,HX8357_WHITE,time);
-  centerText(5,3,1,1,2,HX8357_WHITE,String(Input));
-  String currentState;
-  if(preheating){
-    currentState = "Preheating";
-  }
-  if(soaking){
-    currentState = "Soaking";
-  }
-  if(reflowing){
-    currentState = "Reflowing";
-  }
-  if(coolingDown){
-    currentState = "Cool Down";
-  }
-  Serial.print(currentState);
-  if(newState){
-    newState = false;
-    tft.fillRoundRect(2*gridSize+2, 3*gridSize+2, 2*gridSize-4, gridSize-4, 10, HX8357_BLACK);
-    centerText(2,3,2,1,HX8357_WHITE,currentState);
+void stopReflow() {
+  Serial.println("Stopping reflow process...");
+  emergencyStopReflow();
+  currentState = IDLE;
+}
+
+void emergencyStopReflow() {
+  digitalWrite(SSR_PIN, LOW);
+  emergencyStop = true;
+  Output = 0;
+  Setpoint = cooldownTemp;
+  Serial.println("EMERGENCY STOP - SSR turned OFF");
+}
+
+void logDataPoint() {
+  if (dataLogIndex < maxDataPoints) {
+    dataLog[dataLogIndex].time = millis() - reflowStartTime;
+    dataLog[dataLogIndex].temperature = Input;
+    dataLog[dataLogIndex].setpoint = Setpoint;
+    dataLog[dataLogIndex].state = currentState;
+    dataLogIndex++;
   }
 }
 
-void drawGrid(){
-  tft.setFont();
-  tft.setTextColor(HX8357_WHITE);
-  tft.drawRect(0,0,displayWidth,displayHeight-gridSize,gridColor);
-  for(int i=1; i<6; i++){
-    tft.drawFastVLine(i*gridSize,0,displayHeight-gridSize,gridColor);
-  }
-  for(int j=1; j<4; j++){
-    tft.drawFastHLine(0,j*gridSize,displayWidth,gridColor);
-  }
-  tft.setCursor(4,4); tft.print("300");
-  tft.setCursor(4,1*gridSize+4); tft.print("200");
-  tft.setCursor(4,2*gridSize+4); tft.print("100");
+// ==================== Web Server Handlers ====================
 
-  tft.setCursor(1*gridSize+4,3*gridSize-7-4); tft.print(formatTime(totalTime/6));
-  tft.setCursor(2*gridSize+4,3*gridSize-7-4); tft.print(formatTime(2*totalTime/6));
-  tft.setCursor(3*gridSize+4,3*gridSize-7-4); tft.print(formatTime(3*totalTime/6));
-  tft.setCursor(4*gridSize+4,3*gridSize-7-4); tft.print(formatTime(4*totalTime/6));
-  tft.setCursor(5*gridSize+4,3*gridSize-7-4); tft.print(formatTime(5*totalTime/6));
+void handleRoot() {
+  String html = F(R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reflow Oven Controller</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .card {
+      background: white;
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: white;
+      text-align: center;
+      margin-bottom: 20px;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    }
+    h2 {
+      color: #333;
+      margin-bottom: 15px;
+      border-bottom: 2px solid #667eea;
+      padding-bottom: 10px;
+    }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    .status-item {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+      border-left: 4px solid #667eea;
+    }
+    .status-label {
+      font-size: 0.9em;
+      color: #666;
+      margin-bottom: 5px;
+    }
+    .status-value {
+      font-size: 1.5em;
+      font-weight: bold;
+      color: #333;
+    }
+    .temp-display {
+      font-size: 3em !important;
+      color: #667eea;
+    }
+    .controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button {
+      flex: 1;
+      min-width: 120px;
+      padding: 15px 30px;
+      font-size: 1.1em;
+      font-weight: bold;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .btn-start {
+      background: #28a745;
+      color: white;
+    }
+    .btn-start:hover { background: #218838; }
+    .btn-stop {
+      background: #dc3545;
+      color: white;
+    }
+    .btn-stop:hover { background: #c82333; }
+    .btn-stop:disabled, .btn-start:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .config-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 15px;
+    }
+    .config-item {
+      display: flex;
+      flex-direction: column;
+    }
+    .config-item label {
+      font-weight: bold;
+      margin-bottom: 5px;
+      color: #555;
+    }
+    .config-item input {
+      padding: 10px;
+      border: 2px solid #ddd;
+      border-radius: 5px;
+      font-size: 1em;
+    }
+    .config-item input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    .btn-save {
+      background: #007bff;
+      color: white;
+      margin-top: 15px;
+    }
+    .btn-save:hover { background: #0056b3; }
+    .state-IDLE { color: #6c757d; }
+    .state-PREHEAT { color: #fd7e14; }
+    .state-SOAK { color: #ffc107; }
+    .state-REFLOW { color: #dc3545; }
+    .state-COOLDOWN { color: #007bff; }
+    .state-COMPLETE { color: #28a745; }
+    .state-ERROR { color: #dc3545; font-weight: bold; }
+    .ssr-indicator {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      margin-left: 10px;
+      vertical-align: middle;
+    }
+    .ssr-on { background: #28a745; box-shadow: 0 0 10px #28a745; }
+    .ssr-off { background: #6c757d; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔥 Solder Reflow Oven Controller</h1>
+    
+    <div class="card">
+      <h2>Status</h2>
+      <div class="status-grid">
+        <div class="status-item">
+          <div class="status-label">Current Temperature</div>
+          <div class="status-value temp-display" id="currentTemp">--</div>
+        </div>
+        <div class="status-item">
+          <div class="status-label">Target Temperature</div>
+          <div class="status-value" id="targetTemp">--</div>
+        </div>
+        <div class="status-item">
+          <div class="status-label">State</div>
+          <div class="status-value" id="state">IDLE</div>
+        </div>
+        <div class="status-item">
+          <div class="status-label">Time Elapsed</div>
+          <div class="status-value" id="timeElapsed">0s</div>
+        </div>
+        <div class="status-item">
+          <div class="status-label">SSR Status</div>
+          <div class="status-value">
+            <span id="ssrStatus">OFF</span>
+            <span class="ssr-indicator ssr-off" id="ssrIndicator"></span>
+          </div>
+        </div>
+      </div>
+      
+      <div class="controls">
+        <button class="btn-start" id="startBtn" onclick="startReflow()">START REFLOW</button>
+        <button class="btn-stop" id="stopBtn" onclick="stopReflow()" disabled>EMERGENCY STOP</button>
+      </div>
+    </div>
+    
+    <div class="card">
+      <h2>Reflow Profile Configuration</h2>
+      <div class="config-grid">
+        <div class="config-item">
+          <label>Preheat Temp (°C)</label>
+          <input type="number" id="preheatTemp" value="150" min="0" max="300">
+        </div>
+        <div class="config-item">
+          <label>Preheat Time (sec)</label>
+          <input type="number" id="preheatTime" value="90" min="0" max="300">
+        </div>
+        <div class="config-item">
+          <label>Soak Temp (°C)</label>
+          <input type="number" id="soakTemp" value="180" min="0" max="300">
+        </div>
+        <div class="config-item">
+          <label>Soak Time (sec)</label>
+          <input type="number" id="soakTime" value="90" min="0" max="300">
+        </div>
+        <div class="config-item">
+          <label>Reflow Temp (°C)</label>
+          <input type="number" id="reflowTemp" value="230" min="0" max="300">
+        </div>
+        <div class="config-item">
+          <label>Reflow Time (sec)</label>
+          <input type="number" id="reflowTime" value="40" min="0" max="300">
+        </div>
+      </div>
+      <button class="btn-save" onclick="saveConfig()">Save Configuration</button>
+    </div>
+  </div>
 
-  plotReflowProfile();
+  <script>
+    let ws;
+    
+    function connectWebSocket() {
+      ws = new WebSocket('ws://' + window.location.hostname + ':81');
+      
+      ws.onopen = function() {
+        console.log('WebSocket connected');
+      };
+      
+      ws.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+        updateDisplay(data);
+      };
+      
+      ws.onclose = function() {
+        console.log('WebSocket disconnected, reconnecting...');
+        setTimeout(connectWebSocket, 1000);
+      };
+    }
+    
+    function updateDisplay(data) {
+      document.getElementById('currentTemp').textContent = data.temp.toFixed(1) + '°C';
+      document.getElementById('targetTemp').textContent = data.setpoint.toFixed(1) + '°C';
+      
+      const stateEl = document.getElementById('state');
+      stateEl.textContent = data.state;
+      stateEl.className = 'status-value state-' + data.state;
+      
+      document.getElementById('timeElapsed').textContent = Math.floor(data.elapsed / 1000) + 's';
+      
+      const ssrOn = data.ssr === 1;
+      document.getElementById('ssrStatus').textContent = ssrOn ? 'ON' : 'OFF';
+      document.getElementById('ssrIndicator').className = 'ssr-indicator ' + (ssrOn ? 'ssr-on' : 'ssr-off');
+      
+      // Update button states
+      const isActive = data.state !== 'IDLE' && data.state !== 'COMPLETE' && data.state !== 'ERROR';
+      document.getElementById('startBtn').disabled = isActive;
+      document.getElementById('stopBtn').disabled = !isActive;
+    }
+    
+    function startReflow() {
+      fetch('/api/start', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => console.log('Reflow started:', data))
+        .catch(err => console.error('Error:', err));
+    }
+    
+    function stopReflow() {
+      if (confirm('Are you sure you want to emergency stop the reflow process?')) {
+        fetch('/api/stop', { method: 'POST' })
+          .then(r => r.json())
+          .then(data => console.log('Reflow stopped:', data))
+          .catch(err => console.error('Error:', err));
+      }
+    }
+    
+    function saveConfig() {
+      const config = {
+        preheatTemp: parseFloat(document.getElementById('preheatTemp').value),
+        preheatTime: parseInt(document.getElementById('preheatTime').value) * 1000,
+        soakTemp: parseFloat(document.getElementById('soakTemp').value),
+        soakTime: parseInt(document.getElementById('soakTime').value) * 1000,
+        reflowTemp: parseFloat(document.getElementById('reflowTemp').value),
+        reflowTime: parseInt(document.getElementById('reflowTime').value) * 1000
+      };
+      
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      })
+      .then(r => r.json())
+      .then(data => {
+        alert('Configuration saved successfully!');
+        console.log('Config saved:', data);
+      })
+      .catch(err => {
+        alert('Error saving configuration');
+        console.error('Error:', err);
+      });
+    }
+    
+    function loadConfig() {
+      fetch('/api/config')
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById('preheatTemp').value = data.preheatTemp;
+          document.getElementById('preheatTime').value = data.preheatTime / 1000;
+          document.getElementById('soakTemp').value = data.soakTemp;
+          document.getElementById('soakTime').value = data.soakTime / 1000;
+          document.getElementById('reflowTemp').value = data.reflowTemp;
+          document.getElementById('reflowTime').value = data.reflowTime / 1000;
+        })
+        .catch(err => console.error('Error loading config:', err));
+    }
+    
+    // Initialize
+    connectWebSocket();
+    loadConfig();
+  </script>
+</body>
+</html>
+)rawliteral");
+  
+  server.send(200, "text/html", html);
 }
 
-void drawButton(int x, int y, int w, int h, uint16_t backgroundColor, uint16_t textColor, String text){
-  tft.setFont(&FreeMonoBold12pt7b);
-  if(backgroundColor == HX8357_BLACK){
-    tft.drawRoundRect(x*gridSize+2, y*gridSize+2, w*gridSize-4, h*gridSize-4, 10, HX8357_WHITE);
-  }
-  else{
-    tft.fillRoundRect(x*gridSize+2, y*gridSize+2, w*gridSize-4, h*gridSize-4, 10, backgroundColor);
-  }
-  if(text == "UP_ARROW"){
-    tft.fillTriangle(x*gridSize+(w*gridSize-60)/2, y*gridSize+(h*gridSize-52)/2+52, x*gridSize+(w*gridSize-60)/2+60, y*gridSize+(h*gridSize-52)/2+52, x*gridSize+w*gridSize/2, y*gridSize+(h*gridSize-52)/2, textColor);
-  }
-  else if(text == "DOWN_ARROW"){
-    tft.fillTriangle(x*gridSize+(w*gridSize-60)/2, y*gridSize+(h*gridSize-52)/2, x*gridSize+(w*gridSize-60)/2+60, y*gridSize+(h*gridSize-52)/2, x*gridSize+w*gridSize/2, y*gridSize+(h*gridSize-52)/2+52, textColor);
-  }
-  else{
-    int16_t textBoundX, textBoundY;
-    uint16_t textBoundWidth, textBoundHeight;
-    tft.getTextBounds(text,0,0,&textBoundX, &textBoundY, &textBoundWidth, &textBoundHeight);
-    tft.setCursor(x*gridSize+(w*gridSize-textBoundWidth)/2, y*gridSize+(h*gridSize+textBoundHeight)/2); tft.setTextColor(textColor); tft.print(text);
+void handleStatus() {
+  StaticJsonDocument<256> doc;
+  doc["temp"] = Input;
+  doc["setpoint"] = Setpoint;
+  doc["state"] = stateNames[currentState];
+  doc["elapsed"] = (currentState != IDLE) ? (millis() - reflowStartTime) : 0;
+  doc["ssr"] = digitalRead(SSR_PIN);
+  doc["output"] = Output;
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleGetConfig() {
+  StaticJsonDocument<256> doc;
+  doc["preheatTemp"] = preheatTemp;
+  doc["preheatTime"] = preheatTime;
+  doc["soakTemp"] = soakTemp;
+  doc["soakTime"] = soakTime;
+  doc["reflowTemp"] = reflowTemp;
+  doc["reflowTime"] = reflowTime;
+  doc["cooldownTemp"] = cooldownTemp;
+  doc["cooldownTime"] = cooldownTime;
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleSetConfig() {
+  if (server.hasArg("plain")) {
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, server.arg("plain"));
+    
+    if (!error) {
+      preheatTemp = doc["preheatTemp"] | preheatTemp;
+      preheatTime = doc["preheatTime"] | preheatTime;
+      soakTemp = doc["soakTemp"] | soakTemp;
+      soakTime = doc["soakTime"] | soakTime;
+      reflowTemp = doc["reflowTemp"] | reflowTemp;
+      reflowTime = doc["reflowTime"] | reflowTime;
+      
+      Serial.println("Configuration updated:");
+      Serial.print("Preheat: "); Serial.print(preheatTemp); Serial.print("°C for "); Serial.print(preheatTime/1000); Serial.println("s");
+      Serial.print("Soak: "); Serial.print(soakTemp); Serial.print("°C for "); Serial.print(soakTime/1000); Serial.println("s");
+      Serial.print("Reflow: "); Serial.print(reflowTemp); Serial.print("°C for "); Serial.print(reflowTime/1000); Serial.println("s");
+      
+      server.send(200, "application/json", "{\"status\":\"ok\"}");
+    } else {
+      server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+    }
+  } else {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No data\"}");
   }
 }
 
-void centerText(int x, int y, int w, int h, uint16_t textColor, String text){
-  tft.setFont(&FreeMonoBold12pt7b);
-  int16_t textBoundX, textBoundY;
-  uint16_t textBoundWidth, textBoundHeight;
-  tft.getTextBounds(text,0,0,&textBoundX, &textBoundY, &textBoundWidth, &textBoundHeight);
-  tft.setCursor(x*gridSize+(w*gridSize-textBoundWidth)/2, y*gridSize+(h*gridSize+textBoundHeight)/2);
-  tft.setTextColor(textColor); tft.print(text);
+void handleStart() {
+  startReflow();
+  server.send(200, "application/json", "{\"status\":\"started\"}");
 }
 
-void centerText(int x, int y, int w, int h, int justification, uint16_t textColor, String text){
-  tft.setFont(&FreeMonoBold12pt7b);
-  int16_t textBoundX, textBoundY;
-  uint16_t textBoundWidth, textBoundHeight;
-  tft.getTextBounds(text,0,0,&textBoundX, &textBoundY, &textBoundWidth, &textBoundHeight);
-  switch(justification){
-    case 0: //top justified
-      tft.setCursor(x*gridSize+(w*gridSize-textBoundWidth)/2, y*gridSize+(h*gridSize/2-textBoundHeight)/2+textBoundHeight);
+void handleStop() {
+  stopReflow();
+  server.send(200, "application/json", "{\"status\":\"stopped\"}");
+}
+
+void handleDataLog() {
+  String json = "[";
+  for (int i = 0; i < dataLogIndex && i < maxDataPoints; i++) {
+    if (i > 0) json += ",";
+    json += "{\"t\":" + String(dataLog[i].time) + 
+            ",\"temp\":" + String(dataLog[i].temperature) + 
+            ",\"sp\":" + String(dataLog[i].setpoint) + "}";
+  }
+  json += "]";
+  server.send(200, "application/json", json);
+}
+
+void sendWebSocketUpdate() {
+  StaticJsonDocument<256> doc;
+  doc["temp"] = Input;
+  doc["setpoint"] = Setpoint;
+  doc["state"] = stateNames[currentState];
+  doc["elapsed"] = (currentState != IDLE) ? (millis() - reflowStartTime) : 0;
+  doc["ssr"] = digitalRead(SSR_PIN);
+  doc["output"] = Output;
+  
+  String response;
+  serializeJson(doc, response);
+  webSocket.broadcastTXT(response);
+}
+
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+  switch(type) {
+    case WStype_DISCONNECTED:
+      Serial.printf("[%u] Disconnected!\n", num);
       break;
-    case 1: //center justified
-      tft.setCursor(x*gridSize+(w*gridSize-textBoundWidth)/2, y*gridSize+(h*gridSize+textBoundHeight)/2);
+    case WStype_CONNECTED:
+      {
+        IPAddress ip = webSocket.remoteIP(num);
+        Serial.printf("[%u] Connected from %d.%d.%d.%d\n", num, ip[0], ip[1], ip[2], ip[3]);
+      }
       break;
-    case 2: //bottom justified
-      tft.setCursor(x*gridSize+(w*gridSize-textBoundWidth)/2, y*gridSize+gridSize-(h*gridSize/2-textBoundHeight)/2);
-      break;
-  }
-  tft.setTextColor(textColor); tft.print(text);
-}
-
-void drawSetupMenu(){
-  tft.setFont(&FreeMonoBold12pt7b);
-  drawButton(0,0,2,3, preheatColor, HX8357_WHITE, "");                  drawButton(2,0,2,3, soakColor, HX8357_WHITE, "");                 drawButton(4,0,2,3, reflowColor, HX8357_WHITE, "");
-  centerText(0,0,2,1, HX8357_WHITE, "Preheat");                         centerText(2,0,2,1, HX8357_WHITE, "Soak");                        centerText(4,0,2,1, HX8357_WHITE, "Reflow");
-  centerText(0,1,2,1,0, HX8357_WHITE, String(int(preheatTemp)) + " C");        centerText(2,1,2,1,0, HX8357_WHITE, String(int(soakTemp)) + " C");       centerText(4,1,2,1,0, HX8357_WHITE, String(int(reflowTemp)) + " C");
-  centerText(0,1,2,1,2, HX8357_WHITE, String(formatTime(preheatTime)) + " min."); centerText(2,1,2,1,2, HX8357_WHITE, String(formatTime(soakTime)) + " min.");centerText(4,1,2,1,2, HX8357_WHITE, String(formatTime(reflowTime)) + " min.");
-  drawButton(0,3,6,1, HX8357_GREEN, HX8357_WHITE, "Confirm");
-  tft.drawCircle(90,95,3,HX8357_WHITE); tft.drawCircle(250,95,3,HX8357_WHITE); tft.drawCircle(410,95,3,HX8357_WHITE);
-}
-
-void drawReflowMenu(){
-  tft.setFont(&FreeMonoBold12pt7b);
-  drawGrid();
-  centerText(4,3,1,1,0, HX8357_WHITE, "Time: ");
-  centerText(4,3,1,1,2, HX8357_WHITE, "Temp: ");
-  //drawButton(0,3,2,1, HX8357_RED, HX8357_WHITE, "Stop"); drawButton(0,3,2,1, HX8357_RED, HX8357_WHITE, "Start");
-}
-
-void drawEditMenu(String stage){
-  tft.setFont(&FreeMonoBold12pt7b);
-  centerText(0,0,2,1,0, HX8357_WHITE, stage); centerText(0,0,2,1, HX8357_WHITE, " Temp: "); drawButton(0,1,3,1, HX8357_WHITE, HX8357_BLACK, "UP_ARROW"); drawButton(0,2,3,1, HX8357_WHITE, HX8357_BLACK, "DOWN_ARROW");
-  centerText(3,0,2,1,0, HX8357_WHITE, stage); centerText(3,0,2,1, HX8357_WHITE, " Time: "); drawButton(3,1,3,1, HX8357_WHITE, HX8357_BLACK, "UP_ARROW"); drawButton(3,2,3,1, HX8357_WHITE, HX8357_BLACK, "DOWN_ARROW");
-  //centerText(0,1,2,1,0, HX8357_WHITE, String(int(preheatTemp)));        //centerText(2,1,2,1,0, HX8357_WHITE, String(int(soakTemp)));       centerText(4,1,2,1,0, HX8357_WHITE, String(int(reflowTemp)));
-  //centerText(0,1,2,1,2, HX8357_WHITE, String(formatTime(preheatTime))); //centerText(2,1,2,1,2, HX8357_WHITE, String(formatTime(soakTime)));centerText(4,1,2,1,2, HX8357_WHITE, String(formatTime(reflowTime)));
-  //drawButton(0,0,2,2, HX8357_BLACK, HX8357_WHITE, "");                  drawButton(2,0,2,2, HX8357_BLACK, HX8357_WHITE, "");              drawButton(4,0,2,2, HX8357_BLACK, HX8357_WHITE, "");
-
-  //drawButton(0,2,1,1, HX8357_WHITE, HX8357_BLACK, "UP");drawButton(1,2,1,1, HX8357_WHITE, HX8357_BLACK, "DOWN");
-  //drawButton(2,2,1,1, HX8357_WHITE, HX8357_BLACK, "UP");drawButton(3,2,1,1, HX8357_WHITE, HX8357_BLACK, "DOWN");
-  //drawButton(4,2,1,1, HX8357_WHITE, HX8357_BLACK, "UP");drawButton(5,2,1,1, HX8357_WHITE, HX8357_BLACK, "DOWN");
-  tft.drawCircle(90,95,3,HX8357_WHITE); tft.drawCircle(250,95,3,HX8357_WHITE); tft.drawCircle(410,95,3,HX8357_WHITE);
-  drawButton(0,3,6,1, HX8357_GREEN, HX8357_WHITE, "Save");
-}
-
-int getGridCellX(){
-  int xpoint = touchpoint.x;
-  Serial.print("x resistance: ");Serial.print(xpoint); Serial.print(" ");
-  //xpoint = map(xpoint,TS_MINX,TS_MAXX,displayWidth-1,0);
-  if(xpoint > 824)
-    return 0;
-  else if(xpoint > 689)
-    return 1;
-  else if(xpoint > 546)
-    return 2;
-  else if(xpoint > 399)
-    return 3;
-  else if(xpoint > 259)
-    return 4;
-  else
-    return 5;
-}
-
-int getGridCellY(){
-  int ypoint = touchpoint.y;
-  Serial.print("y resistance: ");Serial.print(ypoint); Serial.print(" ");
-  //ypoint = map(ypoint,TS_MINY,TS_MAXY,0,displayHeight-1);
-  if(ypoint > 800)
-    return 3;
-  else if(ypoint > 690)
-    return 2;
-  else if(ypoint > 500)
-    return 1;
-  else
-    return 0;
-}
-
-String formatTime(unsigned long milliseconds) {
-  // Calculate the number of minutes and seconds
-  unsigned long totalSeconds = milliseconds / 1000;
-  unsigned int minutes = totalSeconds / 60;
-  unsigned int seconds = totalSeconds % 60;
-
-  // Format the time as a string with a leading zero if necessary
-  String formattedTime = (minutes < 10 ? "0" : "") + String(minutes) + ":" + (seconds < 10 ? "0" : "") + String(seconds);
-
-  return formattedTime;
-}
-
-/*int  mapTime(int time){
-  return map(time,0,totalTime,0,displayWidth);
-}*/
-
-/*int mapTemp(int temp){
-  return map(temp,0,300,3*gridSize,0);
-}*/
-
-void plotDataPoint(){
-  uint16_t color;
-  if(preheating){
-    color = preheatColor;
-  }
-  if(soaking){
-    color = soakColor;
-  }
-  if(reflowing){
-    color = reflowColor;
-  }
-  if(coolingDown){
-    color = cooldownColor;
-  }
-  tft.fillCircle(map(timeSinceReflowStarted,0,totalTime,0,displayWidth),map(Input,0,300,3*gridSize,0),2, color);
-  //tft.fillCircle(mapTime(timeSinceReflowStarted), mapTemp(Input), 2, color);
-}
-
-void plotReflowProfile(){
-   int xMin, xMax, amp;
-   xMin = 0;
-   xMax = map(preheatTime,0,totalTime,0,displayWidth);
-   amp = map(preheatTemp,0,300,3*gridSize,0) - map(cooldownTemp,0,300,3*gridSize,0);
-  for(int i = 0; i <= (xMax-xMin); i++){
-    tft.fillCircle(xMin+i,-amp/2*cos(PI*i/(xMax-xMin))+map(cooldownTemp,0,300,3*gridSize,0)+amp/2,2,preheatColor_d);
-  }
-
-  xMin = map(preheatTime,0,totalTime,0,displayWidth);
-  xMax = map(preheatTime+soakTime,0,totalTime,0,displayWidth);
-  amp = map(soakTemp,0,300,3*gridSize,0) - map(preheatTemp,0,300,3*gridSize,0);
-  //amp = 80;
-  for(int i = 0; i <= (xMax-xMin); i++){
-    tft.fillCircle(xMin+i,-amp/2*cos(PI*i/(xMax-xMin))+map(preheatTemp,0,300,3*gridSize,0)+amp/2,2, soakColor_d);
-  }
-
-  xMin = map(preheatTime+soakTime,0,totalTime,0,displayWidth);
-  xMax = map(preheatTime+soakTime+reflowTime,0,totalTime,0,displayWidth);
-  amp = map(reflowTemp,0,300,3*gridSize,0) - map(soakTemp,0,300,3*gridSize,0);
-  //amp = 80;
-  for(int i = 0; i <= (xMax-xMin); i++){
-    tft.fillCircle(xMin+i,-amp/2*cos(PI*i/(xMax-xMin))+map(soakTemp,0,300,3*gridSize,0)+amp/2,2,reflowColor_d);
-  }
-
-  xMin = map(preheatTime+soakTime+reflowTime,0,totalTime,0,displayWidth);
-  xMax = map(totalTime,0,totalTime,0,displayWidth);
-  amp = map(cooldownTemp,0,300,3*gridSize,0) - map(reflowTemp,0,300,3*gridSize,0);
-  //amp = 80;
-  for(int i = 0; i <= (xMax-xMin); i++){
-    tft.fillCircle(xMin+i,-amp/2*cos(PI*i/(xMax-xMin))+map(reflowTemp,0,300,3*gridSize,0)+amp/2,2, cooldownColor_d);
   }
 }
