@@ -223,7 +223,7 @@ IDLE → PREHEAT → SOAK → REFLOW → COOLDOWN → COMPLETE
 | PREHEAT | 150°C | 90s | Gradually warm components |
 | SOAK | 180°C | 90s | Activate flux, even heating |
 | REFLOW | 230°C | 40s | Melt solder |
-| COOLDOWN | <35°C | 60s | Solidify joints |
+| COOLDOWN | 25°C | 60s max | Solidify joints |
 
 ## Safety Features
 

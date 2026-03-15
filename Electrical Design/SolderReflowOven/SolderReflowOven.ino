@@ -283,8 +283,8 @@ void updateReflowStateMachine() {
       break;
   }
   
-  // Run PID (except during cooldown where we force heater off)
-  if (currentState != COOLDOWN && currentState != COMPLETE) {
+  // Run PID (only during active heating states, not during cooldown, complete, or error)
+  if (currentState != COOLDOWN && currentState != COMPLETE && currentState != ERROR_STATE) {
     myPID.Compute();
     
     // Control SSR based on PID output
@@ -293,6 +293,9 @@ void updateReflowStateMachine() {
     } else {
       digitalWrite(SSR_PIN, LOW);
     }
+  } else {
+    // Ensure SSR is off in safe states
+    digitalWrite(SSR_PIN, LOW);
   }
   
   // Print status
