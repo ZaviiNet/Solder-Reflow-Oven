@@ -27,6 +27,7 @@
 #include <Adafruit_MAX31855.h>
 #include <SPI.h>
 #include <ArduinoJson.h>
+#include <EEPROM.h>
 
 // Pin Definitions
 #define THERMO_CLK D5   // GPIO14
@@ -60,6 +61,30 @@ unsigned long cooldownTime = 60000;   // 60 seconds
 double Setpoint = 0, Input = 0, Output = 0;
 double Kp = 2, Ki = 5, Kd = 1;
 PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
+
+// EEPROM Configuration
+#define EEPROM_SIZE 512
+#define EEPROM_MAGIC 0xABCD  // Magic number to verify valid EEPROM data
+
+struct EEPROMConfig {
+  uint16_t magic;
+  double preheatTemp;
+  double soakTemp;
+  double reflowTemp;
+  double cooldownTemp;
+  unsigned long preheatTime;
+  unsigned long soakTime;
+  unsigned long reflowTime;
+  unsigned long cooldownTime;
+  double Kp;
+  double Ki;
+  double Kd;
+};
+
+// Temperature-based state transition settings
+bool useTemperatureBasedTransitions = true;  // Enable temperature-aware state transitions
+double tempReachThreshold = 5.0;  // Degrees within target to consider "reached"
+unsigned long maxStateTimeout = 180000;  // 3 minutes max per stage (safety timeout)
 
 // State Machine
 enum ReflowState {
@@ -98,6 +123,58 @@ const int maxDataPoints = 500;
 DataPoint dataLog[maxDataPoints];
 int dataLogIndex = 0;
 
+// EEPROM Functions
+void loadConfigFromEEPROM() {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROMConfig config;
+  EEPROM.get(0, config);
+  
+  if (config.magic == EEPROM_MAGIC) {
+    Serial.println("Loading configuration from EEPROM...");
+    preheatTemp = config.preheatTemp;
+    soakTemp = config.soakTemp;
+    reflowTemp = config.reflowTemp;
+    cooldownTemp = config.cooldownTemp;
+    preheatTime = config.preheatTime;
+    soakTime = config.soakTime;
+    reflowTime = config.reflowTime;
+    cooldownTime = config.cooldownTime;
+    Kp = config.Kp;
+    Ki = config.Ki;
+    Kd = config.Kd;
+    
+    // Update PID with loaded values
+    myPID.SetTunings(Kp, Ki, Kd);
+    
+    Serial.println("Configuration loaded successfully!");
+    Serial.print("PID Values - Kp: "); Serial.print(Kp);
+    Serial.print(", Ki: "); Serial.print(Ki);
+    Serial.print(", Kd: "); Serial.println(Kd);
+  } else {
+    Serial.println("No valid EEPROM configuration found, using defaults");
+  }
+}
+
+void saveConfigToEEPROM() {
+  EEPROMConfig config;
+  config.magic = EEPROM_MAGIC;
+  config.preheatTemp = preheatTemp;
+  config.soakTemp = soakTemp;
+  config.reflowTemp = reflowTemp;
+  config.cooldownTemp = cooldownTemp;
+  config.preheatTime = preheatTime;
+  config.soakTime = soakTime;
+  config.reflowTime = reflowTime;
+  config.cooldownTime = cooldownTime;
+  config.Kp = Kp;
+  config.Ki = Ki;
+  config.Kd = Kd;
+  
+  EEPROM.put(0, config);
+  EEPROM.commit();
+  Serial.println("Configuration saved to EEPROM");
+}
+
 void setup() {
   Serial.begin(115200);
   delay(100);
@@ -129,6 +206,9 @@ void setup() {
   myPID.SetOutputLimits(0, 1);
   myPID.SetMode(AUTOMATIC);
   Serial.println("PID controller initialized");
+
+  // Load configuration from EEPROM
+  loadConfigFromEEPROM();
 
   // Setup WiFi
   setupWiFi();
@@ -250,22 +330,56 @@ void updateReflowStateMachine() {
   switch (currentState) {
     case PREHEAT:
       Setpoint = preheatTemp;
-      if (stateElapsed >= preheatTime) {
-        changeState(SOAK);
+      if (useTemperatureBasedTransitions) {
+        // Wait until temperature is reached OR time/timeout expires
+        if ((Input >= preheatTemp - tempReachThreshold && stateElapsed >= preheatTime) || 
+            stateElapsed >= maxStateTimeout) {
+          changeState(SOAK);
+        }
+      } else {
+        // Original time-based only
+        if (stateElapsed >= preheatTime) {
+          changeState(SOAK);
+        }
       }
       break;
       
     case SOAK:
       Setpoint = soakTemp;
-      if (stateElapsed >= soakTime) {
-        changeState(REFLOW);
+      if (useTemperatureBasedTransitions) {
+        // Wait until temperature is reached OR time/timeout expires
+        if ((Input >= soakTemp - tempReachThreshold && stateElapsed >= soakTime) || 
+            stateElapsed >= maxStateTimeout) {
+          changeState(REFLOW);
+        }
+      } else {
+        // Original time-based only
+        if (stateElapsed >= soakTime) {
+          changeState(REFLOW);
+        }
       }
       break;
       
     case REFLOW:
       Setpoint = reflowTemp;
-      if (stateElapsed >= reflowTime) {
-        changeState(COOLDOWN);
+      if (useTemperatureBasedTransitions) {
+        // CRITICAL FIX: Wait until temperature is reached AND time requirement met
+        // This ensures we stay at reflow temp for the required duration
+        if (Input >= reflowTemp - tempReachThreshold) {
+          // Temperature reached, now wait for the full reflow time
+          if (stateElapsed >= reflowTime) {
+            changeState(COOLDOWN);
+          }
+        } else if (stateElapsed >= maxStateTimeout) {
+          // Safety timeout - transition anyway
+          Serial.println("WARNING: REFLOW timeout - temperature not reached!");
+          changeState(COOLDOWN);
+        }
+      } else {
+        // Original time-based only
+        if (stateElapsed >= reflowTime) {
+          changeState(COOLDOWN);
+        }
       }
       break;
       
@@ -484,6 +598,22 @@ void handleRoot() {
       margin-top: 15px;
     }
     .btn-save:hover { background: #0056b3; }
+    #chartContainer {
+      position: relative;
+      height: 400px;
+      margin: 20px 0;
+    }
+    .pid-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 15px;
+    }
+    .help-text {
+      font-size: 0.85em;
+      color: #666;
+      margin-top: 5px;
+      font-style: italic;
+    }
     .state-IDLE { color: #6c757d; }
     .state-PREHEAT { color: #fd7e14; }
     .state-SOAK { color: #ffc107; }
@@ -571,10 +701,121 @@ void handleRoot() {
       </div>
       <button class="btn-save" onclick="saveConfig()">Save Configuration</button>
     </div>
+    
+    <div class="card">
+      <h2>📊 Temperature Chart</h2>
+      <div id="chartContainer">
+        <canvas id="tempChart"></canvas>
+      </div>
+    </div>
+    
+    <div class="card">
+      <h2>⚙️ PID Tuning</h2>
+      <div class="pid-grid">
+        <div class="config-item">
+          <label>Kp (Proportional)</label>
+          <input type="number" id="Kp" value="2" step="0.1" min="0">
+          <div class="help-text">Increase for faster response</div>
+        </div>
+        <div class="config-item">
+          <label>Ki (Integral)</label>
+          <input type="number" id="Ki" value="5" step="0.1" min="0">
+          <div class="help-text">Eliminates steady-state error</div>
+        </div>
+        <div class="config-item">
+          <label>Kd (Derivative)</label>
+          <input type="number" id="Kd" value="1" step="0.1" min="0">
+          <div class="help-text">Reduces overshoot</div>
+        </div>
+      </div>
+      <button class="btn-save" onclick="savePID()">Save PID Settings</button>
+    </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script>
     let ws;
+    let chart;
+    let chartData = {
+      labels: [],
+      datasets: [
+        {
+          label: 'Temperature',
+          data: [],
+          borderColor: '#dc3545',
+          backgroundColor: 'rgba(220, 53, 69, 0.1)',
+          borderWidth: 2,
+          tension: 0.4
+        },
+        {
+          label: 'Setpoint',
+          data: [],
+          borderColor: '#667eea',
+          backgroundColor: 'rgba(102, 126, 234, 0.1)',
+          borderWidth: 2,
+          borderDash: [5, 5],
+          tension: 0.4
+        }
+      ]
+    };
+    
+    function initChart() {
+      const ctx = document.getElementById('tempChart').getContext('2d');
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: chartData,
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            y: {
+              beginAtZero: true,
+              title: {
+                display: true,
+                text: 'Temperature (°C)'
+              }
+            },
+            x: {
+              title: {
+                display: true,
+                text: 'Time (s)'
+              }
+            }
+          },
+          plugins: {
+            legend: {
+              display: true,
+              position: 'top'
+            }
+          }
+        }
+      });
+    }
+    
+    function updateChart(temp, setpoint, elapsed) {
+      const timeInSeconds = Math.floor(elapsed / 1000);
+      
+      // Add new data point
+      chartData.labels.push(timeInSeconds);
+      chartData.datasets[0].data.push(temp);
+      chartData.datasets[1].data.push(setpoint);
+      
+      // Keep only last 300 points (5 minutes at 1Hz)
+      if (chartData.labels.length > 300) {
+        chartData.labels.shift();
+        chartData.datasets[0].data.shift();
+        chartData.datasets[1].data.shift();
+      }
+      
+      chart.update('none'); // Update without animation for better performance
+    }
+    
+    function clearChart() {
+      chartData.labels = [];
+      chartData.datasets[0].data = [];
+      chartData.datasets[1].data = [];
+      chart.update();
+    }
     
     function connectWebSocket() {
       ws = new WebSocket('ws://' + window.location.hostname + ':81');
@@ -612,6 +853,16 @@ void handleRoot() {
       const isActive = data.state !== 'IDLE' && data.state !== 'COMPLETE' && data.state !== 'ERROR';
       document.getElementById('startBtn').disabled = isActive;
       document.getElementById('stopBtn').disabled = !isActive;
+      
+      // Update chart if reflow is active
+      if (isActive) {
+        updateChart(data.temp, data.setpoint, data.elapsed);
+      }
+      
+      // Clear chart when returning to IDLE
+      if (data.state === 'IDLE' && chartData.labels.length > 0) {
+        clearChart();
+      }
     }
     
     function startReflow() {
@@ -666,11 +917,42 @@ void handleRoot() {
           document.getElementById('soakTime').value = data.soakTime / 1000;
           document.getElementById('reflowTemp').value = data.reflowTemp;
           document.getElementById('reflowTime').value = data.reflowTime / 1000;
+          
+          // Load PID values
+          if (data.Kp !== undefined) {
+            document.getElementById('Kp').value = data.Kp;
+            document.getElementById('Ki').value = data.Ki;
+            document.getElementById('Kd').value = data.Kd;
+          }
         })
         .catch(err => console.error('Error loading config:', err));
     }
     
+    function savePID() {
+      const config = {
+        Kp: parseFloat(document.getElementById('Kp').value),
+        Ki: parseFloat(document.getElementById('Ki').value),
+        Kd: parseFloat(document.getElementById('Kd').value)
+      };
+      
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      })
+      .then(r => r.json())
+      .then(data => {
+        alert('PID settings saved successfully!');
+        console.log('PID saved:', data);
+      })
+      .catch(err => {
+        alert('Error saving PID settings');
+        console.error('Error:', err);
+      });
+    }
+    
     // Initialize
+    initChart();
     connectWebSocket();
     loadConfig();
   </script>
@@ -696,7 +978,7 @@ void handleStatus() {
 }
 
 void handleGetConfig() {
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<512> doc;
   doc["preheatTemp"] = preheatTemp;
   doc["preheatTime"] = preheatTime;
   doc["soakTemp"] = soakTemp;
@@ -705,6 +987,9 @@ void handleGetConfig() {
   doc["reflowTime"] = reflowTime;
   doc["cooldownTemp"] = cooldownTemp;
   doc["cooldownTime"] = cooldownTime;
+  doc["Kp"] = Kp;
+  doc["Ki"] = Ki;
+  doc["Kd"] = Kd;
   
   String response;
   serializeJson(doc, response);
@@ -713,7 +998,7 @@ void handleGetConfig() {
 
 void handleSetConfig() {
   if (server.hasArg("plain")) {
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<512> doc;
     DeserializationError error = deserializeJson(doc, server.arg("plain"));
     
     if (!error) {
@@ -723,6 +1008,21 @@ void handleSetConfig() {
       soakTime = doc["soakTime"] | soakTime;
       reflowTemp = doc["reflowTemp"] | reflowTemp;
       reflowTime = doc["reflowTime"] | reflowTime;
+      
+      // Update PID parameters if provided
+      if (doc.containsKey("Kp")) {
+        Kp = doc["Kp"];
+        Ki = doc["Ki"];
+        Kd = doc["Kd"];
+        myPID.SetTunings(Kp, Ki, Kd);
+        Serial.println("PID parameters updated:");
+        Serial.print("Kp: "); Serial.print(Kp);
+        Serial.print(", Ki: "); Serial.print(Ki);
+        Serial.print(", Kd: "); Serial.println(Kd);
+      }
+      
+      // Save to EEPROM
+      saveConfigToEEPROM();
       
       Serial.println("Configuration updated:");
       Serial.print("Preheat: "); Serial.print(preheatTemp); Serial.print("°C for "); Serial.print(preheatTime/1000); Serial.println("s");
