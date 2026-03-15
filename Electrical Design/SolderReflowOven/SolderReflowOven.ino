@@ -1,13 +1,18 @@
-#define THERMO_CS 8
-#define SSR_PIN 2
-#define TFT_CS 10
-#define TFT_DC 9
-#define TFT_RST -1 // RST can be set to -1 if you tie it to Arduino's reset
+// NodeMCU ESP8266 Pin Definitions
+// ESP8266 Hardware SPI: MOSI=D7(GPIO13), MISO=D6(GPIO12), CLK=D5(GPIO14)
+#define THERMO_CLK D5   // GPIO14 - SPI Clock
+#define THERMO_CS D4    // GPIO2 - Chip Select
+#define THERMO_DO D6    // GPIO12 - MISO/Data Out
+#define SSR_PIN D8      // GPIO15 - Solid State Relay control
+#define TFT_CS D1       // GPIO5 - TFT Chip Select
+#define TFT_DC D2       // GPIO4 - TFT Data/Command
+#define TFT_RST -1      // RST can be set to -1 if you tie it to ESP8266's reset
 // Note the X and Y pin numbers are opposite from what is printed on the TFT display. This was done to align with the screen rotation.
-#define YP A0  // must be an analog pin, use "An" notation!
-#define XM A1  // must be an analog pin, use "An" notation!
-#define YM 7   // can be a digital pin
-#define XP 6   // can be a digital pin
+// ESP8266 has only one ADC (A0), so we use a workaround for the second analog reading
+#define YP A0   // must be an analog pin, use "An" notation!
+#define XM D3   // GPIO0 - Using digital pin (will require modified touch reading)
+#define YM D0   // GPIO16 - can be a digital pin  
+#define XP D7   // GPIO13 - can be a digital pin (shared with MOSI)
 // This is calibration data for the raw touch data to the screen coordinates
 #define TS_MINX 190
 #define TS_MINY 400
@@ -15,7 +20,7 @@
 #define TS_MAXY 820
 
 #include <PID_v1.h>
-#include <Adafruit_MAX31856.h>
+#include <Adafruit_MAX31855.h>  // Changed from MAX31856 to MAX31855
 #include <SPI.h>
 #include "Adafruit_GFX.h"
 #include <Fonts/FreeMonoBold12pt7b.h>
@@ -38,10 +43,9 @@ TSPoint touchpoint = ts.getPoint();
 bool setupMenu = false, editMenu = false, reflowMenu = false;
 const int touchHoldLimit = 500;
 
-// use hardware SPI, just pass in the CS pin
-Adafruit_MAX31856 maxthermo = Adafruit_MAX31856(THERMO_CS);
-// Use software SPI: CS, DI, DO, CLK
-//Adafruit_MAX31856 maxthermo = Adafruit_MAX31856(THERMO_CS, SOFT_MOSI, SOFT_MISO, SOFT_CLK);
+// Use software SPI for MAX31855 on ESP8266 to avoid conflicts
+Adafruit_MAX31855 maxthermo = Adafruit_MAX31855(THERMO_CLK, THERMO_CS, THERMO_DO);
+// Note: MAX31855 only supports K-type thermocouples
 
 unsigned long timeSinceReflowStarted;
 unsigned long timeTempCheck = 1000;
@@ -64,9 +68,9 @@ PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial)
-    delay(10);
-  Serial.println("Solder Reflow Oven");
+  // ESP8266 doesn't require waiting for Serial
+  delay(10);
+  Serial.println("Solder Reflow Oven - ESP8266 NodeMCU + MAX31855");
   delay(100);
   tft.begin();
   tft.setRotation(1);
@@ -75,31 +79,23 @@ void setup() {
   tft.setTextSize(1);
 
 
-  if (!maxthermo.begin()) {
+  // MAX31855 doesn't have a begin() method, it initializes automatically
+  // Just verify we can read from it
+  Serial.println("Initializing MAX31855 thermocouple...");
+  delay(500); // Give the MAX31855 time to stabilize
+  double testTemp = maxthermo.readCelsius();
+  if (isnan(testTemp)) {
     Serial.println("Could not initialize thermocouple.");
+    Serial.println("Check wiring!");
     while (1) delay(10);
   }
+  Serial.println("MAX31855 initialized successfully");
+  Serial.print("Current temperature: ");
+  Serial.print(testTemp);
+  Serial.println(" C");
 
-  maxthermo.setThermocoupleType(MAX31856_TCTYPE_K);
-
-  /*
-  Serial.print("Thermocouple type: ");
-  switch (maxthermo.getThermocoupleType() ) {
-    case MAX31856_TCTYPE_B: Serial.println("B Type"); break;
-    case MAX31856_TCTYPE_E: Serial.println("E Type"); break;
-    case MAX31856_TCTYPE_J: Serial.println("J Type"); break;
-    case MAX31856_TCTYPE_K: Serial.println("K Type"); break;
-    case MAX31856_TCTYPE_N: Serial.println("N Type"); break;
-    case MAX31856_TCTYPE_R: Serial.println("R Type"); break;
-    case MAX31856_TCTYPE_S: Serial.println("S Type"); break;
-    case MAX31856_TCTYPE_T: Serial.println("T Type"); break;
-    case MAX31856_VMODE_G8: Serial.println("Voltage x8 Gain mode"); break;
-    case MAX31856_VMODE_G32: Serial.println("Voltage x8 Gain mode"); break;
-    default: Serial.println("Unknown"); break;
-  }
-  */
-
-  maxthermo.setConversionMode(MAX31856_ONESHOT_NOWAIT);
+  // MAX31855 only supports K-type thermocouples (no configuration needed)
+  // No setConversionMode for MAX31855 - it continuously converts
 
   Setpoint = cooldownTemp;
   // tell the PID to range between 0 and the full window size
@@ -278,10 +274,15 @@ void loop() {
     if(timeSinceReflowStarted - lastTimeTempCheck > timeTempCheck){
       lastTimeTempCheck = timeSinceReflowStarted;
       printState();
-      // check for conversion complete and read temperature
-      if (maxthermo.conversionComplete()) {
-        Serial.print("\tSetpoint:"); Serial.print(Setpoint);
-        Input = maxthermo.readThermocoupleTemperature();
+      // MAX31855 continuously converts, no need to check for completion
+      // Read temperature directly
+      Serial.print("\tSetpoint:"); Serial.print(Setpoint);
+      Input = maxthermo.readCelsius();
+      // Check for errors
+      if (isnan(Input)) {
+        Serial.println("\tThermocouple read error!");
+        Input = 0; // Use safe default
+      } else {
         Serial.print("\tInput:"); Serial.print(Input);
         myPID.Compute();
         if(Output < 0.5){
@@ -293,11 +294,6 @@ void loop() {
         Serial.print("\tOutput:"); Serial.println(Output);
         plotDataPoint();
       }
-      else {
-        Serial.println("\tConversion not complete!");
-      }
-      // trigger a conversion, returns immediately
-      maxthermo.triggerOneShot();
     }
     if(timeSinceReflowStarted > totalTime){
       reflowMenu = false;
