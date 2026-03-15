@@ -105,6 +105,7 @@ unsigned long reflowStartTime = 0;
 unsigned long stateStartTime = 0;
 unsigned long lastTempCheck = 0;
 unsigned long tempCheckInterval = 1000;  // Check temperature every 1 second
+unsigned long tempReachedTime = 0;  // Time when target temp was reached in current state
 
 // Safety
 bool emergencyStop = false;
@@ -366,8 +367,15 @@ void updateReflowStateMachine() {
         // CRITICAL FIX: Wait until temperature is reached AND time requirement met
         // This ensures we stay at reflow temp for the required duration
         if (Input >= reflowTemp - tempReachThreshold) {
-          // Temperature reached, now wait for the full reflow time
-          if (stateElapsed >= reflowTime) {
+          // Temperature reached
+          if (tempReachedTime == 0) {
+            tempReachedTime = millis();
+            Serial.print("REFLOW temperature reached at ");
+            Serial.print(Input);
+            Serial.println("°C - starting reflow timer");
+          }
+          // Now wait for the full reflow time from when temp was reached
+          if (millis() - tempReachedTime >= reflowTime) {
             changeState(COOLDOWN);
           }
         } else if (stateElapsed >= maxStateTimeout) {
@@ -434,6 +442,7 @@ void changeState(ReflowState newState) {
   
   currentState = newState;
   stateStartTime = millis();
+  tempReachedTime = 0;  // Reset temperature reached tracker for new state
 }
 
 void startReflow() {
