@@ -14,6 +14,8 @@ This repository contains complete reflow oven controllers for multiple platforms
 
 ## Available Versions
 
+**Not sure which to choose?** See **[PLATFORM_COMPARISON.md](PLATFORM_COMPARISON.md)** for detailed comparison.
+
 ### 1. Raspberry Pi Pico W (Recommended - Dual-Core)
 - **Location**: `Electrical Design/SolderReflowOvenPicoW/`
 - **Processor**: RP2040 dual-core @ 133 MHz
@@ -44,6 +46,15 @@ This repository contains complete reflow oven controllers for multiple platforms
 5. **Use**: Configure profile, click START REFLOW
 
 ## Documentation
+
+### Platform Selection
+
+- **[PLATFORM_COMPARISON.md](PLATFORM_COMPARISON.md)** - **NEW!** Choose between ESP8266 and Pico W
+  - Side-by-side feature comparison
+  - Performance metrics
+  - When to choose each platform
+  - Upgrade recommendations
+  - Migration effort estimate
 
 ### Platform-Specific Guides
 
