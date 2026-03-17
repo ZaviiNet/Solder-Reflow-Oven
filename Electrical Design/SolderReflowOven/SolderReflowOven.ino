@@ -94,11 +94,12 @@ enum ReflowState {
   REFLOW,
   COOLDOWN,
   COMPLETE,
-  ERROR_STATE
+  ERROR_STATE,
+  PID_TUNING
 };
 
 ReflowState currentState = IDLE;
-String stateNames[] = {"IDLE", "PREHEAT", "SOAK", "REFLOW", "COOLDOWN", "COMPLETE", "ERROR"};
+String stateNames[] = {"IDLE", "PREHEAT", "SOAK", "REFLOW", "COOLDOWN", "COMPLETE", "ERROR", "PID_TUNING"};
 
 // Timing
 unsigned long reflowStartTime = 0;
@@ -123,6 +124,48 @@ struct DataPoint {
 const int maxDataPoints = 500;
 DataPoint dataLog[maxDataPoints];
 int dataLogIndex = 0;
+
+// PID Auto-Tuning Variables
+bool pidTuningActive = false;
+int tuningStep = 0;  // 0=heat to temp1, 1=oscillate at temp1, 2=heat to temp2, etc.
+double tuningTargetTemp[] = {100.0, 150.0, 200.0};  // Test temperatures
+int tuningTempIndex = 0;
+double tuningAmplitude = 5.0;  // Temperature swing for oscillation test
+unsigned long tuningStartTime = 0;
+unsigned long tuningStepStartTime = 0;
+unsigned long oscillationStartTime = 0;
+double lastPeakTemp = 0;
+double lastValleyTemp = 0;
+unsigned long lastPeakTime = 0;
+unsigned long lastValleyTime = 0;
+int oscillationCount = 0;
+double sumOscillationPeriod = 0;
+double sumOscillationAmplitude = 0;
+bool waitingForPeak = true;
+double tuningKu = 0;  // Ultimate gain
+double tuningPu = 0;  // Ultimate period
+double calculatedKp = 0;
+double calculatedKi = 0;
+double calculatedKd = 0;
+
+// Console Log (for PID tuning output)
+const int maxConsoleLines = 50;
+String consoleLog[maxConsoleLines];
+int consoleLogIndex = 0;
+
+void addConsoleLog(String message) {
+  if (consoleLogIndex < maxConsoleLines) {
+    consoleLog[consoleLogIndex] = message;
+    consoleLogIndex++;
+  } else {
+    // Shift array and add new message at end
+    for (int i = 0; i < maxConsoleLines - 1; i++) {
+      consoleLog[i] = consoleLog[i + 1];
+    }
+    consoleLog[maxConsoleLines - 1] = message;
+  }
+  Serial.println("[CONSOLE] " + message);
+}
 
 // EEPROM Functions
 void loadConfigFromEEPROM() {
@@ -272,6 +315,8 @@ void handleSetConfig();
 void handleStart();
 void handleStop();
 void handleDataLog();
+void handleTunePID();
+void handleGetConsoleLog();
 
 void setupWebServer() {
   // Serve main page
@@ -284,6 +329,8 @@ void setupWebServer() {
   server.on("/api/start", HTTP_POST, handleStart);
   server.on("/api/stop", HTTP_POST, handleStop);
   server.on("/api/data", HTTP_GET, handleDataLog);
+  server.on("/api/tune-pid", HTTP_POST, handleTunePID);
+  server.on("/api/console", HTTP_GET, handleGetConsoleLog);
   
   server.begin();
   Serial.println("HTTP server started on port 80");
@@ -299,8 +346,10 @@ void loop() {
     lastTempCheck = currentTime;
     readTemperature();
     
-    // Update state machine if reflow is active
-    if (currentState != IDLE && currentState != COMPLETE && currentState != ERROR_STATE) {
+    // Update state machine based on current state
+    if (currentState == PID_TUNING) {
+      updatePIDTuningStateMachine();
+    } else if (currentState != IDLE && currentState != COMPLETE && currentState != ERROR_STATE) {
       updateReflowStateMachine();
     }
     
@@ -477,6 +526,202 @@ void stopReflow() {
   Serial.println("Stopping reflow process...");
   emergencyStopReflow();
   currentState = IDLE;
+}
+
+void startPIDTuning() {
+  if (currentState == IDLE || currentState == COMPLETE || currentState == ERROR_STATE) {
+    addConsoleLog("=== PID Auto-Tuning Started ===");
+    addConsoleLog("This will test at 3 temperatures: 100C, 150C, 200C");
+    addConsoleLog("Each test creates controlled oscillations to measure system response");
+    addConsoleLog("");
+    
+    pidTuningActive = true;
+    emergencyStop = false;
+    thermocoupleErrorCount = 0;
+    tuningStep = 0;
+    tuningTempIndex = 0;
+    tuningStartTime = millis();
+    tuningStepStartTime = millis();
+    oscillationCount = 0;
+    sumOscillationPeriod = 0;
+    sumOscillationAmplitude = 0;
+    consoleLogIndex = 0;  // Clear console for new tuning session
+    dataLogIndex = 0;  // Reset data log
+    
+    // Reset PID controller
+    Output = 0;
+    myPID.SetMode(MANUAL);
+    
+    currentState = PID_TUNING;
+    addConsoleLog("Step 1/6: Heating to " + String(tuningTargetTemp[0]) + "C...");
+  }
+}
+
+void stopPIDTuning() {
+  addConsoleLog("PID Tuning stopped by user");
+  pidTuningActive = false;
+  digitalWrite(SSR_PIN, LOW);
+  Output = 0;
+  myPID.SetMode(AUTOMATIC);
+  currentState = IDLE;
+}
+
+void updatePIDTuningStateMachine() {
+  if (!pidTuningActive || emergencyStop) {
+    return;
+  }
+  
+  unsigned long elapsed = millis() - tuningStepStartTime;
+  double targetTemp = tuningTargetTemp[tuningTempIndex];
+  
+  // Step 0, 2, 4: Heat to target temperature
+  if (tuningStep % 2 == 0) {
+    Setpoint = targetTemp;
+    
+    // Simple bang-bang control to reach temperature quickly
+    if (Input < targetTemp - 2.0) {
+      digitalWrite(SSR_PIN, HIGH);
+      Output = 1;
+    } else if (Input >= targetTemp - 2.0) {
+      // Temperature reached, move to oscillation test
+      tuningStep++;
+      tuningStepStartTime = millis();
+      oscillationStartTime = millis();
+      oscillationCount = 0;
+      sumOscillationPeriod = 0;
+      sumOscillationAmplitude = 0;
+      waitingForPeak = true;
+      lastPeakTemp = Input;
+      lastValleyTemp = Input;
+      
+      addConsoleLog("Target " + String(targetTemp) + "C reached. Starting oscillation test...");
+      addConsoleLog("Step " + String(tuningStep/2 + 1) + "/6: Testing at " + String(targetTemp) + "C");
+    }
+  }
+  // Step 1, 3, 5: Oscillation test
+  else {
+    // Relay-based oscillation: switch SSR on/off to create oscillations
+    if (Input < targetTemp - tuningAmplitude) {
+      digitalWrite(SSR_PIN, HIGH);
+      Output = 1;
+      
+      // Detect valley
+      if (!waitingForPeak && Input < lastValleyTemp) {
+        lastValleyTemp = Input;
+        lastValleyTime = millis();
+      } else if (!waitingForPeak && Input > lastValleyTemp + 1.0) {
+        // Valley confirmed, now wait for peak
+        waitingForPeak = true;
+        lastPeakTemp = Input;
+      }
+    } else if (Input > targetTemp + tuningAmplitude) {
+      digitalWrite(SSR_PIN, LOW);
+      Output = 0;
+      
+      // Detect peak
+      if (waitingForPeak && Input > lastPeakTemp) {
+        lastPeakTemp = Input;
+        lastPeakTime = millis();
+      } else if (waitingForPeak && Input < lastPeakTemp - 1.0) {
+        // Peak confirmed, calculate oscillation
+        if (oscillationCount > 0) {
+          unsigned long period = lastPeakTime - lastValleyTime;
+          double amplitude = lastPeakTemp - lastValleyTemp;
+          
+          if (period > 1000 && period < 300000 && amplitude > 1.0) {  // Sanity checks
+            sumOscillationPeriod += period;
+            sumOscillationAmplitude += amplitude;
+            oscillationCount++;
+            
+            addConsoleLog("  Oscillation #" + String(oscillationCount) + 
+                         ": Period=" + String(period/1000.0, 1) + "s, Amplitude=" + 
+                         String(amplitude, 1) + "C");
+          }
+        }
+        
+        waitingForPeak = false;
+        lastValleyTemp = Input;
+      }
+    }
+    
+    // Need at least 3 oscillations, or timeout after 10 minutes
+    if (oscillationCount >= 3 || elapsed > 600000) {
+      if (oscillationCount >= 3) {
+        addConsoleLog("Oscillation test complete at " + String(targetTemp) + "C");
+      } else {
+        addConsoleLog("Timeout - moving to next temperature");
+      }
+      
+      // Move to next temperature or complete
+      tuningTempIndex++;
+      if (tuningTempIndex < 3) {
+        tuningStep++;
+        tuningStepStartTime = millis();
+        addConsoleLog("");
+        addConsoleLog("Step " + String(tuningStep/2 + 2) + "/6: Heating to " + 
+                     String(tuningTargetTemp[tuningTempIndex]) + "C...");
+      } else {
+        // All tests complete, calculate PID values
+        calculatePIDFromAutoTune();
+        pidTuningActive = false;
+        digitalWrite(SSR_PIN, LOW);
+        Output = 0;
+        myPID.SetMode(AUTOMATIC);
+        currentState = IDLE;
+      }
+    }
+  }
+}
+
+void calculatePIDFromAutoTune() {
+  addConsoleLog("");
+  addConsoleLog("=== Calculating PID Parameters ===");
+  
+  if (oscillationCount < 3) {
+    addConsoleLog("ERROR: Not enough oscillation data collected");
+    addConsoleLog("Current PID values unchanged");
+    return;
+  }
+  
+  // Calculate average period and amplitude
+  double avgPeriod = sumOscillationPeriod / oscillationCount / 1000.0;  // Convert to seconds
+  double avgAmplitude = sumOscillationAmplitude / oscillationCount;
+  
+  addConsoleLog("Average oscillation period: " + String(avgPeriod, 2) + " seconds");
+  addConsoleLog("Average amplitude: " + String(avgAmplitude, 2) + " C");
+  
+  // For relay method, estimate ultimate gain and period
+  // Ku ≈ (4 * relay_amplitude) / (π * oscillation_amplitude)
+  double relayAmplitude = 1.0;  // Our output is 0 or 1
+  tuningKu = (4.0 * relayAmplitude) / (PI * avgAmplitude);
+  tuningPu = avgPeriod;
+  
+  addConsoleLog("Ultimate gain (Ku): " + String(tuningKu, 3));
+  addConsoleLog("Ultimate period (Pu): " + String(tuningPu, 2) + "s");
+  addConsoleLog("");
+  
+  // Calculate PID using Ziegler-Nichols method
+  // Classic Ziegler-Nichols tuning rules:
+  // Kp = 0.6 * Ku
+  // Ki = 1.2 * Ku / Pu  (or Ti = Pu / 2)
+  // Kd = 0.075 * Ku * Pu  (or Td = Pu / 8)
+  calculatedKp = 0.6 * tuningKu;
+  calculatedKi = 1.2 * tuningKu / tuningPu;
+  calculatedKd = 0.075 * tuningKu * tuningPu;
+  
+  addConsoleLog("=== Recommended PID Values (Ziegler-Nichols) ===");
+  addConsoleLog("Kp = " + String(calculatedKp, 3));
+  addConsoleLog("Ki = " + String(calculatedKi, 3));
+  addConsoleLog("Kd = " + String(calculatedKd, 3));
+  addConsoleLog("");
+  addConsoleLog("These values are conservative. You may need to fine-tune:");
+  addConsoleLog("- Increase Kp for faster response");
+  addConsoleLog("- Increase Ki to eliminate steady-state error");
+  addConsoleLog("- Increase Kd to reduce overshoot");
+  addConsoleLog("");
+  addConsoleLog("Copy these values to PID Tuning section and click Save");
+  addConsoleLog("");
+  addConsoleLog("=== Auto-Tuning Complete ===");
 }
 
 void emergencyStopReflow() {
@@ -657,6 +902,45 @@ void handleRoot() {
     }
     .ssr-on { background: #28a745; box-shadow: 0 0 10px #28a745; }
     .ssr-off { background: #6c757d; }
+    .btn-tune {
+      background: #6f42c1;
+      color: white;
+    }
+    .btn-tune:hover { background: #5a32a3; }
+    .console-container {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      font-family: 'Courier New', monospace;
+      font-size: 0.9em;
+      padding: 15px;
+      border-radius: 5px;
+      max-height: 400px;
+      overflow-y: auto;
+      margin-top: 15px;
+      display: none;
+    }
+    .console-container.visible {
+      display: block;
+    }
+    .console-line {
+      margin: 2px 0;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .console-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .btn-toggle-console {
+      background: #6c757d;
+      color: white;
+      font-size: 0.9em;
+      padding: 5px 15px;
+    }
+    .btn-toggle-console:hover { background: #5a6268; }
+    .state-PID_TUNING { color: #6f42c1; font-weight: bold; }
   </style>
 </head>
 <body>
@@ -755,6 +1039,15 @@ void handleRoot() {
         </div>
       </div>
       <button class="btn-save" onclick="savePID()">Save PID Settings</button>
+      <button class="btn-tune" onclick="tunePID()" id="tuneBtn">🔧 Auto-Tune PID</button>
+      
+      <div class="console-header" style="margin-top: 20px;">
+        <h3 style="margin: 0; color: #333;">Console Log</h3>
+        <button class="btn-toggle-console" onclick="toggleConsole()">Show/Hide Console</button>
+      </div>
+      <div id="console" class="console-container">
+        <div id="consoleContent"></div>
+      </div>
     </div>
   </div>
 
@@ -878,11 +1171,19 @@ void handleRoot() {
       
       // Update button states
       const isActive = data.state !== 'IDLE' && data.state !== 'COMPLETE' && data.state !== 'ERROR';
+      const isTuning = data.state === 'PID_TUNING';
       document.getElementById('startBtn').disabled = isActive;
       document.getElementById('stopBtn').disabled = !isActive;
+      document.getElementById('tuneBtn').disabled = (isActive && !isTuning);
       
-      // Update chart if reflow is active
-      if (isActive) {
+      if (isTuning) {
+        document.getElementById('tuneBtn').textContent = '⏹ Stop Auto-Tune';
+      } else {
+        document.getElementById('tuneBtn').textContent = '🔧 Auto-Tune PID';
+      }
+      
+      // Update chart if reflow is active (but not during tuning)
+      if (isActive && !isTuning) {
         updateChart(data.temp, data.setpoint, data.elapsed);
       }
       
@@ -978,6 +1279,83 @@ void handleRoot() {
       });
     }
     
+    function tunePID() {
+      const tuneBtn = document.getElementById('tuneBtn');
+      const currentState = document.getElementById('state').textContent;
+      
+      if (currentState === 'PID_TUNING') {
+        // Stop tuning
+        if (confirm('Stop PID auto-tuning?')) {
+          fetch('/api/tune-pid', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+              console.log('Tuning stopped:', data);
+              tuneBtn.textContent = '🔧 Auto-Tune PID';
+            })
+            .catch(err => console.error('Error:', err));
+        }
+      } else if (currentState === 'IDLE' || currentState === 'COMPLETE' || currentState === 'ERROR') {
+        // Start tuning
+        if (confirm('Start PID auto-tuning? This will take 15-30 minutes and heat the oven to test temperatures. Make sure the oven is empty.')) {
+          fetch('/api/tune-pid', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+              console.log('Tuning started:', data);
+              tuneBtn.textContent = '⏹ Stop Auto-Tune';
+              document.getElementById('console').classList.add('visible');
+              startConsolePolling();
+            })
+            .catch(err => console.error('Error:', err));
+        }
+      } else {
+        alert('Cannot start PID tuning while reflow is active. Please wait for completion or stop the reflow.');
+      }
+    }
+    
+    function toggleConsole() {
+      const console = document.getElementById('console');
+      console.classList.toggle('visible');
+    }
+    
+    let consolePolling = null;
+    
+    function startConsolePolling() {
+      if (consolePolling) return;
+      
+      consolePolling = setInterval(() => {
+        fetch('/api/console')
+          .then(r => r.json())
+          .then(data => {
+            const consoleContent = document.getElementById('consoleContent');
+            consoleContent.innerHTML = '';
+            data.forEach(line => {
+              const div = document.createElement('div');
+              div.className = 'console-line';
+              div.textContent = line;
+              consoleContent.appendChild(div);
+            });
+            // Auto-scroll to bottom
+            const consoleDiv = document.getElementById('console');
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+            
+            // Stop polling if not tuning
+            const currentState = document.getElementById('state').textContent;
+            if (currentState !== 'PID_TUNING') {
+              stopConsolePolling();
+              document.getElementById('tuneBtn').textContent = '🔧 Auto-Tune PID';
+            }
+          })
+          .catch(err => console.error('Error fetching console:', err));
+      }, 2000);  // Poll every 2 seconds
+    }
+    
+    function stopConsolePolling() {
+      if (consolePolling) {
+        clearInterval(consolePolling);
+        consolePolling = null;
+      }
+    }
+    
     // Initialize
     initChart();
     connectWebSocket();
@@ -998,6 +1376,7 @@ void handleStatus() {
   doc["elapsed"] = (currentState != IDLE) ? (millis() - reflowStartTime) : 0;
   doc["ssr"] = digitalRead(SSR_PIN);
   doc["output"] = Output;
+  doc["tuning"] = pidTuningActive;
   
   String response;
   serializeJson(doc, response);
@@ -1082,6 +1461,28 @@ void handleDataLog() {
     json += "{\"t\":" + String(dataLog[i].time) + 
             ",\"temp\":" + String(dataLog[i].temperature) + 
             ",\"sp\":" + String(dataLog[i].setpoint) + "}";
+  }
+  json += "]";
+  server.send(200, "application/json", json);
+}
+
+void handleTunePID() {
+  if (currentState == IDLE || currentState == COMPLETE || currentState == ERROR_STATE) {
+    startPIDTuning();
+    server.send(200, "application/json", "{\"status\":\"tuning_started\"}");
+  } else if (currentState == PID_TUNING) {
+    stopPIDTuning();
+    server.send(200, "application/json", "{\"status\":\"tuning_stopped\"}");
+  } else {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Cannot start tuning while reflow active\"}");
+  }
+}
+
+void handleGetConsoleLog() {
+  String json = "[";
+  for (int i = 0; i < consoleLogIndex && i < maxConsoleLines; i++) {
+    if (i > 0) json += ",";
+    json += "\"" + consoleLog[i] + "\"";
   }
   json += "]";
   server.send(200, "application/json", json);
