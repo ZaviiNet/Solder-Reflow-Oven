@@ -646,9 +646,26 @@ void readTemperature() {
   }
   lastReadTime = currentTime;
 
-  Input = maxthermo.readCelsius();
-  
-  if (isnan(Input)) {
+  double newTemp = maxthermo.readCelsius();
+
+  if (isnan(newTemp)) {
+    // First read returned an error. On the Pico W the fast processor can cause
+    // transient SPI timing glitches that produce false fault flags in the
+    // MAX31855. Retry after a short delay to distinguish real faults from
+    // one-shot timing artifacts before counting this against the error limit.
+    delay(50);
+    newTemp = maxthermo.readCelsius();
+
+    if (!isnan(newTemp)) {
+      // Retry succeeded — this was a transient SPI timing glitch, not a real
+      // fault. Accept the recovered reading and skip error counting.
+      Serial.println("WARNING: Transient thermocouple read error (recovered - SPI glitch)");
+      addConsoleLog("WARNING: Transient thermocouple error (recovered - SPI glitch)");
+      Input = newTemp;
+      return;
+    }
+
+    // Retry also failed — treat as a genuine error.
     thermocoupleErrorCount++;
 
     // Read error flags from MAX31855
@@ -702,6 +719,7 @@ void readTemperature() {
       currentState = ERROR_STATE;
     }
   } else {
+    Input = newTemp;
     thermocoupleErrorCount = 0;  // Reset error counter on successful read
   }
 }
