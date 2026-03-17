@@ -12,6 +12,20 @@ This repository contains a complete reflow oven controller designed for the **No
 
 ## Documentation
 
+- **[AUTO_TUNE_FEATURE.md](AUTO_TUNE_FEATURE.md)** - **NEW!** Automatic PID tuning feature guide
+  - One-click auto-tuning process
+  - How the algorithm works
+  - Step-by-step usage instructions
+  - Console log functionality
+  - API endpoints
+
+- **[PID_TUNING_GUIDE.md](PID_TUNING_GUIDE.md)** - Complete PID tuning guide
+  - Automatic tuning instructions
+  - Manual tuning guide
+  - Understanding PID parameters
+  - Troubleshooting temperature control
+  - Technical algorithm details
+
 - **[WEB_INTERFACE_README.md](WEB_INTERFACE_README.md)** - Complete guide for the web interface version
   - Pin connections and wiring diagrams
   - WiFi setup (AP and Station modes)
@@ -28,13 +42,17 @@ This repository contains a complete reflow oven controller designed for the **No
 
 ## Features
 
+✅ **Automatic PID Tuning** - NEW! One-click auto-tuning for optimal temperature control  
 ✅ **Web Interface** - Control from any device with a browser  
 ✅ **WiFi Connectivity** - Access Point or connect to existing network  
 ✅ **Real-Time Monitoring** - Live temperature updates via WebSocket  
+✅ **Console Logging** - Real-time system messages and tuning progress  
 ✅ **PID Control** - Precise temperature management  
+✅ **Temperature Charts** - Visual monitoring with Chart.js  
 ✅ **SSR Control** - Direct solid state relay control  
 ✅ **Safety Features** - Emergency stop, auto-shutdown on errors  
 ✅ **Configurable Profiles** - Adjust temperatures and times  
+✅ **EEPROM Storage** - Settings persist across reboots  
 ✅ **No Display Required** - Simplified hardware, no pin conflicts  
 
 ## Hardware Requirements
@@ -103,11 +121,31 @@ Flash Size: 4M (3M SPIFFS)
 
 ### Run Reflow
 
+**First Time Setup** (Recommended):
+1. **Auto-Tune PID** - Click "🔧 Auto-Tune PID" in PID Tuning section
+2. **Wait 15-30 minutes** - Monitor console log for progress
+3. **Apply Values** - Copy recommended Kp, Ki, Kd values and save
+
+**Normal Operation**:
 1. **Monitor** - Check current temperature reads correctly
 2. **Configure** - Set preheat, soak, and reflow parameters
 3. **Start** - Click "START REFLOW" button
 4. **Watch** - Monitor temperature and state changes
 5. **Complete** - Automatic cooldown when finished
+
+### Auto-Tune PID (Recommended for First Use)
+
+The controller includes automatic PID tuning to optimize temperature control:
+
+1. Ensure oven is **empty** (no PCBs)
+2. Navigate to **⚙️ PID Tuning** section
+3. Click **"🔧 Auto-Tune PID"** button
+4. Watch **Console Log** for real-time progress
+5. Wait for completion (15-30 minutes)
+6. Copy recommended values to PID inputs
+7. Click **"Save PID Settings"**
+
+See [AUTO_TUNE_FEATURE.md](AUTO_TUNE_FEATURE.md) for detailed instructions.
 
 ### Emergency Stop
 
