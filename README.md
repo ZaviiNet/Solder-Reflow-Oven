@@ -1,9 +1,44 @@
-# Solder Reflow Oven Controller - ESP8266 Edition
+# Solder Reflow Oven Controller
 
-This repository contains a complete reflow oven controller designed for the **NodeMCU 1.0 ESP12E (ESP8266)** microcontroller with a **web-based interface**.
+This repository contains complete reflow oven controllers for multiple platforms with web-based interfaces.
+
+## 🆕 NEW: Raspberry Pi Pico W Dual-Core Version!
+
+**Upgrade to Pico W for 10x faster PID control!**
+
+- **Dual-core architecture**: Dedicated core for thermal control
+- **10x faster PID loop**: 10 Hz vs 1 Hz on ESP8266
+- **Better temperature control**: Less overshoot, smoother curves
+- **Separate SPI buses**: Thermocouple + future display support
+- See **[PICO_W_MIGRATION_GUIDE.md](PICO_W_MIGRATION_GUIDE.md)** for upgrade instructions
+
+## Available Versions
+
+**Not sure which to choose?** See **[PLATFORM_COMPARISON.md](PLATFORM_COMPARISON.md)** for detailed comparison.
+
+### 1. Raspberry Pi Pico W (Recommended - Dual-Core)
+- **Location**: `Electrical Design/SolderReflowOvenPicoW/`
+- **Processor**: RP2040 dual-core @ 133 MHz
+- **PID Loop**: 10 Hz (100ms updates)
+- **Benefits**: Faster response, dedicated thermal core, better performance
+
+### 2. ESP8266 NodeMCU (Original)
+- **Location**: `Electrical Design/SolderReflowOven/`
+- **Processor**: ESP8266 @ 80 MHz
+- **PID Loop**: 1 Hz (1 second updates)
+- **Status**: Stable, fully functional
 
 ## Quick Start
 
+### For Raspberry Pi Pico W:
+1. **Hardware**: Raspberry Pi Pico W + MAX31855 Thermocouple + SSR
+2. **Software**: Arduino IDE with Pico board support
+3. **Docs**: See `Electrical Design/SolderReflowOvenPicoW/README_PICOW.md`
+4. **Setup**: Upload code, connect to "ReflowOven" WiFi
+5. **Access**: Navigate to http://192.168.4.1
+6. **Use**: Configure profile, click START REFLOW
+
+### For ESP8266 NodeMCU:
 1. **Hardware**: NodeMCU ESP8266 + MAX31855 Thermocouple + SSR
 2. **Software**: Arduino IDE with ESP8266 board support
 3. **Setup**: Upload code, connect to "ReflowOven" WiFi
@@ -12,7 +47,35 @@ This repository contains a complete reflow oven controller designed for the **No
 
 ## Documentation
 
-- **[AUTO_TUNE_FEATURE.md](AUTO_TUNE_FEATURE.md)** - **NEW!** Automatic PID tuning feature guide
+### Platform Selection
+
+- **[PLATFORM_COMPARISON.md](PLATFORM_COMPARISON.md)** - **NEW!** Choose between ESP8266 and Pico W
+  - Side-by-side feature comparison
+  - Performance metrics
+  - When to choose each platform
+  - Upgrade recommendations
+  - Migration effort estimate
+
+### Platform-Specific Guides
+
+- **[PICO_W_MIGRATION_GUIDE.md](PICO_W_MIGRATION_GUIDE.md)** - **NEW!** Upgrade from ESP8266 to Pico W
+  - Why upgrade to Pico W
+  - Hardware migration steps
+  - Software setup for Pico W
+  - Pin mapping and wiring changes
+  - Performance comparison
+  - Troubleshooting
+
+- **[Electrical Design/SolderReflowOvenPicoW/README_PICOW.md](Electrical%20Design/SolderReflowOvenPicoW/README_PICOW.md)** - **NEW!** Complete Pico W documentation
+  - Dual-core architecture explained
+  - Pin connections and wiring
+  - Setup and installation
+  - API reference
+  - Advanced configuration
+
+### General Guides (Apply to Both Platforms)
+
+- **[AUTO_TUNE_FEATURE.md](AUTO_TUNE_FEATURE.md)** - Automatic PID tuning feature guide
   - One-click auto-tuning process
   - How the algorithm works
   - Step-by-step usage instructions
@@ -26,7 +89,7 @@ This repository contains a complete reflow oven controller designed for the **No
   - Troubleshooting temperature control
   - Technical algorithm details
 
-- **[WEB_INTERFACE_README.md](WEB_INTERFACE_README.md)** - Complete guide for the web interface version
+- **[WEB_INTERFACE_README.md](WEB_INTERFACE_README.md)** - Web interface guide (ESP8266)
   - Pin connections and wiring diagrams
   - WiFi setup (AP and Station modes)
   - Web interface usage
@@ -34,20 +97,31 @@ This repository contains a complete reflow oven controller designed for the **No
   - API documentation
   - Troubleshooting
 
-- **[ESP8266_SETUP.md](ESP8266_SETUP.md)** - Historical reference for ESP8266 + MAX31855 with display
+- **[ESP8266_SETUP.md](ESP8266_SETUP.md)** - Historical reference for ESP8266 setup
   - Original migration from Arduino Uno
   - Pin mapping details
   - Library compatibility notes
-  - Display version information (now replaced with web interface)
+  - Display version information
 
 ## Features
 
-✅ **Automatic PID Tuning** - NEW! One-click auto-tuning for optimal temperature control  
+### Common Features (Both Platforms)
+
+✅ **Automatic PID Tuning** - One-click auto-tuning for optimal temperature control  
 ✅ **Web Interface** - Control from any device with a browser  
 ✅ **WiFi Connectivity** - Access Point or connect to existing network  
-✅ **Real-Time Monitoring** - Live temperature updates via WebSocket  
+✅ **Real-Time Monitoring** - Live temperature updates  
 ✅ **Console Logging** - Real-time system messages and tuning progress  
 ✅ **PID Control** - Precise temperature management  
+
+### Pico W Exclusive Features
+
+⚡ **Dual-Core Architecture** - Dedicated core for thermal control  
+⚡ **10x Faster PID Loop** - 10 Hz vs 1 Hz on ESP8266  
+⚡ **Separate SPI Buses** - Independent thermocouple and display interfaces  
+⚡ **Better Performance** - 133 MHz dual-core processor  
+⚡ **More Memory** - 264 KB RAM vs 80 KB  
+⚡ **Future-Ready** - Reserved pins for LCD display on SPI1
 ✅ **Temperature Charts** - Visual monitoring with Chart.js  
 ✅ **SSR Control** - Direct solid state relay control  
 ✅ **Safety Features** - Emergency stop, auto-shutdown on errors  

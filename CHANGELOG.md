@@ -1,6 +1,111 @@
 # Changelog
 
-## [Unreleased] - Enhanced PID Control and Monitoring
+## [2.0.0] - 2026-03-17 - Raspberry Pi Pico W Dual-Core Edition
+
+### Added - Major Platform Addition
+- **🆕 Raspberry Pi Pico W Support**: Complete new firmware version for RP2040 dual-core platform
+  - Dedicated dual-core architecture: Core 0 handles WiFi/Web, Core 1 handles thermal control
+  - **10x faster PID loop**: 10 Hz (100ms) vs 1 Hz (1000ms) on ESP8266
+  - Separate SPI buses: SPI0 for thermocouple, SPI1 reserved for future display
+  - Mutex-protected shared memory for thread-safe core communication
+  - Better temperature control with reduced overshoot and smoother curves
+  - 264 KB RAM vs 80 KB on ESP8266 (3.3x more memory)
+  - Location: `Electrical Design/SolderReflowOvenPicoW/`
+
+### Documentation Added
+- **PICO_W_MIGRATION_GUIDE.md**: Complete migration guide from ESP8266 to Pico W
+  - Hardware migration steps with pin mapping
+  - Software setup instructions for Arduino IDE
+  - Performance comparison and benefits
+  - Troubleshooting common issues
+  - FAQ section
+
+- **README_PICOW.md**: Comprehensive Pico W documentation
+  - Dual-core architecture explanation
+  - Detailed pin connections and wiring diagrams
+  - Setup and installation guide
+  - API reference
+  - Advanced configuration options
+  - Future enhancement roadmap
+
+### Changed
+- **Updated main README.md**: Now covers both ESP8266 and Pico W versions
+  - Clear platform comparison
+  - Quick start guides for both platforms
+  - Organized documentation by platform
+
+### Technical Details - Pico W Architecture
+
+#### Dual-Core Design
+- **Core 0 (WiFi/Web)**: Runs at normal priority, handles all network and web interface tasks
+  - WiFi connectivity (AP or Station mode)
+  - Web server on port 80
+  - HTTP API endpoints
+  - Web interface serving
+  - Configuration management
+  
+- **Core 1 (Thermal Control)**: Dedicated high-priority core for time-critical tasks
+  - Temperature reading at 10 Hz
+  - PID computation at 10 Hz
+  - SSR control
+  - State machine management
+  - Safety monitoring
+  - PID auto-tuning
+
+#### Inter-Core Communication
+- Mutex-protected shared data structure
+- Thread-safe variable access
+- Request/response flags for commands
+- No race conditions or data corruption
+
+#### Performance Improvements
+| Metric | ESP8266 | Pico W | Improvement |
+|--------|---------|--------|-------------|
+| CPU Speed | 80 MHz | 133 MHz × 2 | 3.3x total processing |
+| PID Loop | 1 Hz | 10 Hz | 10x faster |
+| RAM | ~80 KB | 264 KB | 3.3x more |
+| Thermal Response | Delayed | Real-time | Significant |
+
+#### Pin Mapping Changes
+```
+ESP8266 NodeMCU  →  Raspberry Pi Pico W
+─────────────────────────────────────────
+D5 (GPIO14)      →  GPIO 18 (SPI0 SCK)
+D4 (GPIO2)       →  GPIO 17 (CS)
+D6 (GPIO12)      →  GPIO 16 (SPI0 MISO)
+D8 (GPIO15)      →  GPIO 15 (SSR)
+```
+
+#### Future-Ready Features
+- SPI1 pins reserved for LCD display (GPIO 10-13)
+- Can add local display without interfering with thermal control
+- Expandable for multi-zone control
+- OTA update capability ready
+
+### Migration Path
+- Existing ESP8266 users can upgrade with minimal changes
+- Same component reuse: MAX31855, thermocouple, SSR
+- Configuration must be manually re-entered (different EEPROM format)
+- Recommend running PID auto-tune after migration
+- Estimated migration time: 1-2 hours
+
+### Compatibility
+- **Requires**: Raspberry Pi Pico W (WiFi version)
+- **Arduino IDE**: Requires RP2040 board support
+- **Libraries**: Same PID, ArduinoJson, Adafruit MAX31855 libraries
+- **WiFi**: 2.4 GHz only (not 5 GHz compatible)
+
+### Known Limitations - Pico W Version
+- WebSocket not yet implemented (uses HTTP polling)
+- Slightly slower web interface than ESP8266 (WiFi stack difference)
+- No backward compatibility with ESP8266 EEPROM data
+
+### Backward Compatibility
+- **ESP8266 version remains fully supported** in `Electrical Design/SolderReflowOven/`
+- No breaking changes to ESP8266 version
+- Both versions maintained in parallel
+
+## [1.x] - Enhanced PID Control and Monitoring
 
 ### Added
 - **PID Tuning Controls**: Web interface now includes adjustable PID parameters (Kp, Ki, Kd) with helpful descriptions
