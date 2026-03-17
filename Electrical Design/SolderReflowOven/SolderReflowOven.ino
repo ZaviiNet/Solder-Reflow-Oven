@@ -461,6 +461,14 @@ void startReflow() {
     thermocoupleErrorCount = 0;
     reflowStartTime = millis();
     dataLogIndex = 0;  // Reset data log
+    
+    // Reset PID controller for fresh start
+    // This reinitializes the integral term and prevents stale state from affecting the new cycle
+    Output = 0;
+    myPID.SetMode(MANUAL);
+    myPID.SetMode(AUTOMATIC);
+    Serial.println("PID controller reset for new reflow cycle");
+    
     changeState(PREHEAT);
   }
 }
