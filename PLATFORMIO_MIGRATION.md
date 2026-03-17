@@ -163,13 +163,21 @@ upload_speed = 921600
 ### Pico W platformio.ini
 ```ini
 [env:pico_w]
-platform = https://github.com/maxgerhardt/platform-raspberrypi.git
-board = pico_w
+platform = raspberrypi
+board = rpipicow
 framework = arduino
 monitor_speed = 115200
-board_build.core = earlephilhower
+lib_deps = 
+    adafruit/Adafruit MAX31855 library @ ^1.4.1
+    br3ttb/PID @ ^1.2.1
+    bblanchon/ArduinoJson @ ^6.21.3
+build_flags = 
+    -D ARDUINO_ARCH_RP2040
+    -D ARDUINO_RASPBERRY_PI_PICO_W
 board_build.filesystem_size = 0.5m
 ```
+
+**Note**: The Pico W configuration was updated to use the official `raspberrypi` platform instead of the maxgerhardt fork. See [PLATFORMIO_PICO_UPDATE.md](PLATFORMIO_PICO_UPDATE.md) for details.
 
 ## Migration Process
 

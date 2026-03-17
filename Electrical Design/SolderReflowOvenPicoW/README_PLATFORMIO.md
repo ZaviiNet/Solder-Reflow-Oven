@@ -2,6 +2,14 @@
 
 This project has been converted to PlatformIO format for easier dependency management and building.
 
+## PlatformIO Configuration
+
+This project uses the official `raspberrypi` platform for RP2040 boards. The configuration in `platformio.ini` includes:
+
+- **Platform**: `raspberrypi` (official PlatformIO RP2040 platform)
+- **Board**: `rpipicow` (Raspberry Pi Pico W)
+- **Framework**: `arduino` (Arduino-Pico by Earle F. Philhower)
+
 ## Quick Start with PlatformIO
 
 ```bash

@@ -139,23 +139,34 @@ GPIO 25       →  Onboard LED (status)
 
 ### PlatformIO Setup (Alternative)
 
-If using PlatformIO, create `platformio.ini`:
+If using PlatformIO, the project already includes a `platformio.ini` configuration file. 
 
+See [README_PLATFORMIO.md](README_PLATFORMIO.md) for detailed PlatformIO setup instructions.
+
+Quick start:
+```bash
+cd "Electrical Design/SolderReflowOvenPicoW"
+pio run --target upload
+```
+
+The platformio.ini configuration:
 ```ini
 [env:pico_w]
-platform = https://github.com/maxgerhardt/platform-raspberrypi.git
-board = pico_w
+platform = raspberrypi
+board = rpipicow
 framework = arduino
-board_build.core = earlephilhower
+monitor_speed = 115200
 lib_deps = 
     br3ttb/PID@^1.2.1
     adafruit/Adafruit MAX31855 library@^1.4.1
     bblanchon/ArduinoJson@^6.21.3
 build_flags = 
-    -DWIFI_SSID=\"ReflowOven\"
-    -DWIFI_PASSWORD=\"reflow123\"
-monitor_speed = 115200
+    -D ARDUINO_ARCH_RP2040
+    -D ARDUINO_RASPBERRY_PI_PICO_W
+board_build.filesystem_size = 0.5m
 ```
+
+**Note**: WiFi credentials are configured in the source code, not in platformio.ini.
 
 ## Usage
 
