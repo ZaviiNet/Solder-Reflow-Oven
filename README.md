@@ -2,6 +2,18 @@
 
 This repository contains complete reflow oven controllers for multiple platforms with web-based interfaces.
 
+## 🚀 NEW: PlatformIO Support!
+
+**Now using PlatformIO for better development experience!**
+
+- **Easy setup**: No manual library installation
+- **Better dependency management**: Automatic library version control
+- **Cross-platform**: Works on Windows, Mac, and Linux
+- **IDE integration**: VS Code, CLion, Atom support
+- See **[PLATFORMIO_SETUP.md](PLATFORMIO_SETUP.md)** for complete setup guide
+
+**Note**: Arduino .ino files are still available for Arduino IDE users.
+
 ## 🆕 NEW: Raspberry Pi Pico W Dual-Core Version!
 
 **Upgrade to Pico W for 10x faster PID control!**
@@ -30,7 +42,25 @@ This repository contains complete reflow oven controllers for multiple platforms
 
 ## Quick Start
 
-### For Raspberry Pi Pico W:
+### Using PlatformIO (Recommended):
+```bash
+# Install PlatformIO
+pip install platformio
+
+# For ESP8266
+cd "Electrical Design/SolderReflowOven"
+pio run --target upload
+
+# For Pico W
+cd "Electrical Design/SolderReflowOvenPicoW"
+pio run --target upload
+```
+
+See **[PLATFORMIO_SETUP.md](PLATFORMIO_SETUP.md)** for detailed instructions.
+
+### Using Arduino IDE (Alternative):
+
+#### For Raspberry Pi Pico W:
 1. **Hardware**: Raspberry Pi Pico W + MAX31855 Thermocouple + SSR
 2. **Software**: Arduino IDE with Pico board support
 3. **Docs**: See `Electrical Design/SolderReflowOvenPicoW/README_PICOW.md`
@@ -38,7 +68,7 @@ This repository contains complete reflow oven controllers for multiple platforms
 5. **Access**: Navigate to http://192.168.4.1
 6. **Use**: Configure profile, click START REFLOW
 
-### For ESP8266 NodeMCU:
+#### For ESP8266 NodeMCU:
 1. **Hardware**: NodeMCU ESP8266 + MAX31855 Thermocouple + SSR
 2. **Software**: Arduino IDE with ESP8266 board support
 3. **Setup**: Upload code, connect to "ReflowOven" WiFi
@@ -74,6 +104,13 @@ This repository contains complete reflow oven controllers for multiple platforms
   - Advanced configuration
 
 ### General Guides (Apply to Both Platforms)
+
+- **[PLATFORMIO_SETUP.md](PLATFORMIO_SETUP.md)** - **NEW!** PlatformIO setup and usage guide
+  - Why PlatformIO
+  - Installation instructions
+  - Building and uploading
+  - IDE integration
+  - Troubleshooting
 
 - **[AUTO_TUNE_FEATURE.md](AUTO_TUNE_FEATURE.md)** - Automatic PID tuning feature guide
   - One-click auto-tuning process
