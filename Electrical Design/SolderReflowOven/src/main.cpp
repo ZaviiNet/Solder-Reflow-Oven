@@ -197,6 +197,8 @@ void loadConfigFromEEPROM() {
   } else {
     Serial.println("No valid EEPROM configuration found, using defaults");
   }
+
+  EEPROM.end();  // End EEPROM session after loading
 }
 
 void saveConfigToEEPROM() {

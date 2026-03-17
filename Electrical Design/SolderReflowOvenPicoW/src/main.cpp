@@ -269,9 +269,13 @@ void loadConfigFromEEPROM() {
   } else {
     Serial.println("No valid EEPROM configuration found, using defaults");
   }
+
+  EEPROM.end();  // End EEPROM session after loading
 }
 
 void saveConfigToEEPROM() {
+  EEPROM.begin(EEPROM_SIZE);  // Must call begin() before writing
+
   EEPROMConfig config;
   config.magic = EEPROM_MAGIC;
   config.preheatTemp = preheatTemp;
@@ -287,7 +291,9 @@ void saveConfigToEEPROM() {
   config.Kd = Kd;
   
   EEPROM.put(0, config);
-  EEPROM.commit();
+  EEPROM.commit();  // Commit changes to flash
+  EEPROM.end();     // End EEPROM session to ensure data is written
+
   Serial.println("Configuration saved to EEPROM");
 }
 

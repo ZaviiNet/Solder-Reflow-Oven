@@ -15,32 +15,34 @@
  * - Automatic PID tuning
  *
  * Pin Connections (Pico W):
- * - GPIO 18: MAX31855 CLK
- * - GPIO 17: MAX31855 CS
- * - GPIO 16: MAX31855 DO (MISO)
- * - GPIO 15: SSR Control
+ * - GPIO 2: MAX31855 CLK
+ * - GPIO 3: MAX31855 CS
+ * - GPIO 4: MAX31855 DO (MISO)
+ * - GPIO 5: SSR Control
  */
 
 #include <Adafruit_MAX31855.h>
 #include <ArduinoJson.h>
-#include <DNSServer.h>
-#include <EEPROM.h>
-#include <WebServer.h>
 #include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <LittleFS.h>  // Use LittleFS instead of EEPROM for Pico W flash storage
 #include <PID_v1.h>
 #include <SPI.h>
+#include <pico/stdlib.h>
+#include <pico/bootrom.h>
 
 // Pin Definitions (Pico W)
-#define THERMO_CLK 18   // GPIO18
-#define THERMO_CS 17    // GPIO17
-#define THERMO_DO 16    // GPIO16 (MISO)
-#define SSR_PIN 15      // GPIO15
+#define THERMO_CLK 2    // GPIO2
+#define THERMO_CS 3     // GPIO3
+#define THERMO_DO 4     // GPIO4 (MISO)
+#define SSR_PIN 5       // GPIO5
 
 // WiFi Configuration
 // AP mode credentials (used for captive portal setup)
 const char* AP_SSID = "ReflowOven-Setup";   // No password for easy access
 
-// Stored WiFi credentials (loaded from EEPROM, configured via captive portal)
+// Stored WiFi credentials (loaded from flash, configured via captive portal)
 char storedSSID[32] = "";
 char storedPassword[64] = "";
 
@@ -69,26 +71,9 @@ double Setpoint = 0, Input = 0, Output = 0;
 double Kp = 2, Ki = 5, Kd = 1;
 PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 
-// EEPROM Configuration
-#define EEPROM_SIZE 512  // Allocate 512 bytes (actual usage ~170 bytes, extra space for future expansion)
-#define EEPROM_MAGIC 0xABCE  // Magic number to verify valid EEPROM data (bumped from 0xABCD to include WiFi creds)
-
-struct EEPROMConfig {
-  uint16_t magic;
-  double preheatTemp;
-  double soakTemp;
-  double reflowTemp;
-  double cooldownTemp;
-  unsigned long preheatTime;
-  unsigned long soakTime;
-  unsigned long reflowTime;
-  unsigned long cooldownTime;
-  double Kp;
-  double Ki;
-  double Kd;
-  char wifiSSID[32];
-  char wifiPassword[64];
-};
+// LittleFS Configuration
+// Using JSON file in flash filesystem (much better than EEPROM for Pico W)
+// Configuration stored in /config.json on flash partition
 
 // Temperature-based state transition settings
 bool useTemperatureBasedTransitions = true;  // Enable temperature-aware state transitions
@@ -118,6 +103,8 @@ void readTemperature();
 void updatePIDTuningStateMachine();
 void updateReflowStateMachine();
 void logDataPoint();
+void updateLED();
+void setLED(bool state);
 
 ReflowState currentState = IDLE;
 String stateNames[] = {"IDLE", "PREHEAT", "SOAK", "REFLOW", "COOLDOWN", "COMPLETE", "ERROR", "PID_TUNING"};
@@ -128,6 +115,18 @@ unsigned long stateStartTime = 0;
 unsigned long lastTempCheck = 0;
 unsigned long tempCheckInterval = 1000;  // Check temperature every 1 second
 unsigned long tempReachedTime = 0;  // Time when target temp was reached in current state
+
+// LED Status Indicators
+unsigned long lastLEDBlink = 0;
+bool ledState = false;
+enum LEDPattern {
+  LED_OFF,           // Solid off - not initialized
+  LED_SOLID,         // Solid on - connected and idle
+  LED_SLOW_BLINK,    // 1 Hz - WiFi connecting or system starting
+  LED_FAST_BLINK,    // 4 Hz - Active reflow
+  LED_ERROR_BLINK    // 2 Hz - Error state
+};
+LEDPattern currentLEDPattern = LED_OFF;
 
 // Safety
 bool emergencyStop = false;
@@ -188,79 +187,200 @@ void addConsoleLog(String message) {
   Serial.println("[CONSOLE] " + message);
 }
 
-// EEPROM Functions
+// LittleFS Configuration Storage Functions
+// Uses onboard flash filesystem instead of EEPROM - more reliable on Pico W
+#define CONFIG_FILE "/config.json"
+
 void loadConfigFromEEPROM() {
-  EEPROM.begin(EEPROM_SIZE);
-  EEPROMConfig config;
-  EEPROM.get(0, config);
-  
-  if (config.magic == EEPROM_MAGIC) {
-    Serial.println("Loading configuration from EEPROM...");
-    preheatTemp = config.preheatTemp;
-    soakTemp = config.soakTemp;
-    reflowTemp = config.reflowTemp;
-    cooldownTemp = config.cooldownTemp;
-    preheatTime = config.preheatTime;
-    soakTime = config.soakTime;
-    reflowTime = config.reflowTime;
-    cooldownTime = config.cooldownTime;
-    Kp = config.Kp;
-    Ki = config.Ki;
-    Kd = config.Kd;
-    
-    // Load WiFi credentials
-    strncpy(storedSSID, config.wifiSSID, sizeof(storedSSID) - 1);
-    storedSSID[sizeof(storedSSID) - 1] = '\0';
-    strncpy(storedPassword, config.wifiPassword, sizeof(storedPassword) - 1);
-    storedPassword[sizeof(storedPassword) - 1] = '\0';
-    
-    // Update PID with loaded values
-    myPID.SetTunings(Kp, Ki, Kd);
-    
-    Serial.println("Configuration loaded successfully!");
-    Serial.print("PID Values - Kp: "); Serial.print(Kp);
-    Serial.print(", Ki: "); Serial.print(Ki);
-    Serial.print(", Kd: "); Serial.println(Kd);
-    if (strlen(storedSSID) > 0) {
-      Serial.print("Stored WiFi SSID: ");
-      Serial.println(storedSSID);
+  Serial.println("Initializing LittleFS...");
+  if (!LittleFS.begin()) {
+    Serial.println("Failed to mount LittleFS, formatting...");
+    LittleFS.format();
+    if (!LittleFS.begin()) {
+      Serial.println("ERROR: LittleFS format failed!");
+      return;
     }
-  } else {
-    Serial.println("No valid EEPROM configuration found, using defaults");
+  }
+  Serial.println("LittleFS mounted successfully");
+
+  // Check if config file exists
+  if (!LittleFS.exists(CONFIG_FILE)) {
+    Serial.println("No configuration file found, using defaults");
+    return;
+  }
+
+  // Open and read config file
+  File configFile = LittleFS.open(CONFIG_FILE, "r");
+  if (!configFile) {
+    Serial.println("Failed to open config file");
+    return;
+  }
+
+  Serial.println("Loading configuration from flash...");
+
+  // Parse JSON
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, configFile);
+  configFile.close();
+
+  if (error) {
+    Serial.print("Failed to parse config: ");
+    Serial.println(error.c_str());
+    return;
+  }
+
+  // Load reflow parameters
+  preheatTemp = doc["preheatTemp"] | preheatTemp;
+  soakTemp = doc["soakTemp"] | soakTemp;
+  reflowTemp = doc["reflowTemp"] | reflowTemp;
+  cooldownTemp = doc["cooldownTemp"] | cooldownTemp;
+  preheatTime = doc["preheatTime"] | preheatTime;
+  soakTime = doc["soakTime"] | soakTime;
+  reflowTime = doc["reflowTime"] | reflowTime;
+  cooldownTime = doc["cooldownTime"] | cooldownTime;
+
+  // Load PID parameters
+  Kp = doc["Kp"] | Kp;
+  Ki = doc["Ki"] | Ki;
+  Kd = doc["Kd"] | Kd;
+  myPID.SetTunings(Kp, Ki, Kd);
+
+  // Load WiFi credentials
+  const char* ssid = doc["wifiSSID"];
+  const char* password = doc["wifiPassword"];
+  if (ssid) {
+    strncpy(storedSSID, ssid, sizeof(storedSSID) - 1);
+    storedSSID[sizeof(storedSSID) - 1] = '\0';
+  }
+  if (password) {
+    strncpy(storedPassword, password, sizeof(storedPassword) - 1);
+    storedPassword[sizeof(storedPassword) - 1] = '\0';
+  }
+
+  Serial.println("Configuration loaded successfully from flash!");
+  Serial.print("PID Values - Kp: "); Serial.print(Kp);
+  Serial.print(", Ki: "); Serial.print(Ki);
+  Serial.print(", Kd: "); Serial.println(Kd);
+  if (strlen(storedSSID) > 0) {
+    Serial.print("Stored WiFi SSID: ");
+    Serial.println(storedSSID);
   }
 }
 
 void saveConfigToEEPROM() {
-  EEPROMConfig config;
-  config.magic = EEPROM_MAGIC;
-  config.preheatTemp = preheatTemp;
-  config.soakTemp = soakTemp;
-  config.reflowTemp = reflowTemp;
-  config.cooldownTemp = cooldownTemp;
-  config.preheatTime = preheatTime;
-  config.soakTime = soakTime;
-  config.reflowTime = reflowTime;
-  config.cooldownTime = cooldownTime;
-  config.Kp = Kp;
-  config.Ki = Ki;
-  config.Kd = Kd;
-  strncpy(config.wifiSSID, storedSSID, sizeof(config.wifiSSID) - 1);
-  config.wifiSSID[sizeof(config.wifiSSID) - 1] = '\0';
-  strncpy(config.wifiPassword, storedPassword, sizeof(config.wifiPassword) - 1);
-  config.wifiPassword[sizeof(config.wifiPassword) - 1] = '\0';
-  
-  EEPROM.put(0, config);
-  EEPROM.commit();
-  Serial.println("Configuration saved to EEPROM");
+  Serial.println("Saving configuration to flash...");
+
+  // Ensure LittleFS is mounted
+  if (!LittleFS.begin()) {
+    Serial.println("ERROR: LittleFS not mounted!");
+    return;
+  }
+
+  // Create JSON document
+  JsonDocument doc;
+
+  // Save reflow parameters
+  doc["preheatTemp"] = preheatTemp;
+  doc["soakTemp"] = soakTemp;
+  doc["reflowTemp"] = reflowTemp;
+  doc["cooldownTemp"] = cooldownTemp;
+  doc["preheatTime"] = preheatTime;
+  doc["soakTime"] = soakTime;
+  doc["reflowTime"] = reflowTime;
+  doc["cooldownTime"] = cooldownTime;
+
+  // Save PID parameters
+  doc["Kp"] = Kp;
+  doc["Ki"] = Ki;
+  doc["Kd"] = Kd;
+
+  // Save WiFi credentials
+  doc["wifiSSID"] = storedSSID;
+  doc["wifiPassword"] = storedPassword;
+
+  // Write to file
+  File configFile = LittleFS.open(CONFIG_FILE, "w");
+  if (!configFile) {
+    Serial.println("Failed to open config file for writing");
+    return;
+  }
+
+  if (serializeJson(doc, configFile) == 0) {
+    Serial.println("Failed to write config");
+  } else {
+    Serial.println("Configuration saved to flash successfully!");
+    Serial.print("Saved WiFi SSID: ");
+    Serial.println(storedSSID);
+  }
+
+  configFile.close();
+}
+
+// LED Control Functions (Pico W uses CYW43 chip LED)
+void setLED(bool state) {
+  // On Pico W, LED is controlled via the WiFi chip
+  digitalWrite(LED_BUILTIN, state ? HIGH : LOW);
+}
+
+void updateLED() {
+  unsigned long currentTime = millis();
+  unsigned long interval = 0;
+
+  // Determine blink pattern based on system state
+  switch (currentState) {
+    case ERROR_STATE:
+      currentLEDPattern = LED_ERROR_BLINK;
+      interval = 500;  // 2 Hz (500ms on, 500ms off)
+      break;
+
+    case PID_TUNING:
+    case PREHEAT:
+    case SOAK:
+    case REFLOW:
+    case COOLDOWN:
+      currentLEDPattern = LED_FAST_BLINK;
+      interval = 250;  // 4 Hz (250ms on, 250ms off)
+      break;
+
+    case COMPLETE:
+      currentLEDPattern = LED_SLOW_BLINK;
+      interval = 1000;  // 1 Hz (1s on, 1s off)
+      break;
+
+    case IDLE:
+    default:
+      currentLEDPattern = LED_SOLID;
+      interval = 0;  // Solid on
+      break;
+  }
+
+  // Update LED based on pattern
+  if (interval == 0) {
+    // Solid on
+    setLED(true);
+  } else {
+    // Blink at specified interval
+    if (currentTime - lastLEDBlink >= interval) {
+      lastLEDBlink = currentTime;
+      ledState = !ledState;
+      setLED(ledState);
+    }
+  }
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(100);
+  delay(2000);  // Wait for serial connection
   Serial.println("\n\n=================================");
   Serial.println("Solder Reflow Oven Controller");
-  Serial.println("ESP8266 + MAX31855 + Web Interface");
+  Serial.println("Pico W + MAX31855 + Web Interface");
   Serial.println("=================================\n");
+
+  // Initialize onboard LED (Pico W uses LED_BUILTIN for CYW43 LED)
+  pinMode(LED_BUILTIN, OUTPUT);
+  setLED(false);  // Start with LED off
+  currentLEDPattern = LED_SLOW_BLINK;  // Blink during startup
+  Serial.println("Onboard LED initialized");
 
   // Initialize SSR pin
   pinMode(SSR_PIN, OUTPUT);
@@ -269,16 +389,54 @@ void setup() {
 
   // Initialize MAX31855
   Serial.println("Initializing MAX31855 thermocouple...");
-  delay(500);
-  double testTemp = maxthermo.readCelsius();
-  if (isnan(testTemp)) {
-    Serial.println("ERROR: Could not read from thermocouple!");
-    Serial.println("Check wiring and connections.");
+
+  // CRITICAL FOR PICO W: Explicitly configure GPIO pins before Adafruit library uses them
+  // The software SPI in Adafruit library may not configure pins properly on RP2040
+  pinMode(THERMO_CLK, OUTPUT);
+  pinMode(THERMO_CS, OUTPUT);
+  pinMode(THERMO_DO, INPUT);
+  digitalWrite(THERMO_CS, HIGH);  // CS starts high (inactive)
+  Serial.println("MAX31855 GPIO pins configured");
+
+  // Small delay to let pins settle
+  delay(50);
+
+  // CRITICAL: Call begin() to properly initialize SPI communication
+  // This is required on Pico W (worked without on ESP8266 due to different implementation)
+  if (!maxthermo.begin()) {
+    Serial.println("ERROR: Failed to initialize MAX31855!");
+    Serial.println("Check wiring: GPIO 2->CLK, 3->CS, 4->DO, 3.3V->VCC, GND->GND");
     currentState = ERROR_STATE;
   } else {
-    Serial.print("MAX31855 OK - Current temp: ");
-    Serial.print(testTemp);
-    Serial.println(" °C");
+    Serial.println("MAX31855 initialized successfully");
+
+    // CRITICAL: MAX31855 needs significant warm-up time after power-on
+    // Datasheet specifies 200ms conversion time + settling
+    // False SHORT/VCC/GND errors are common if read too soon
+    Serial.println("Waiting for MAX31855 to stabilize (500ms)...");
+    delay(500);
+
+    // First read - discard (may have stale data)
+    maxthermo.readCelsius();
+    delay(100);
+
+    // Second read - actual test
+    double testTemp = maxthermo.readCelsius();
+    if (isnan(testTemp)) {
+      Serial.println("WARNING: Initial temperature read returned NaN");
+      Serial.println("Checking for faults...");
+      uint8_t error = maxthermo.readError();
+      if (error & 0x01) Serial.println("  - Thermocouple open circuit (not connected)");
+      if (error & 0x02) Serial.println("  - Thermocouple short to GND (may be false positive)");
+      if (error & 0x04) Serial.println("  - Thermocouple short to VCC (may be false positive)");
+      if (error == 0) Serial.println("  - No fault detected, sensor may need more warm-up time");
+      Serial.println("Will retry during operation...");
+      // Don't immediately set ERROR_STATE - give it a chance to work after warm-up
+    } else {
+      Serial.print("MAX31855 OK - Current temp: ");
+      Serial.print(testTemp);
+      Serial.println(" °C");
+    }
   }
 
   // Initialize PID
@@ -286,11 +444,27 @@ void setup() {
   myPID.SetMode(AUTOMATIC);
   Serial.println("PID controller initialized");
 
-  // Load configuration from EEPROM
+  // Load configuration from flash (initializes LittleFS)
   loadConfigFromEEPROM();
+
+  // CRITICAL: After LittleFS init, give MAX31855 time to stabilize
+  // LittleFS mounting can cause brief SPI bus interference
+  Serial.println("Re-stabilizing MAX31855 after LittleFS mount...");
+  delay(200);
+
+  // Perform a few dummy reads to clear any stale data
+  for (int i = 0; i < 3; i++) {
+    maxthermo.readCelsius();
+    delay(100);
+  }
+  Serial.println("MAX31855 re-stabilized");
 
   // Setup WiFi
   setupWiFi();
+
+  // Set LED to solid on once WiFi is connected
+  currentLEDPattern = LED_SOLID;
+  setLED(true);
 
   // Setup web server routes
   setupWebServer();
@@ -298,6 +472,11 @@ void setup() {
 
   Serial.println("\n=================================");
   Serial.println("Setup complete!");
+  Serial.println("LED Status Indicators:");
+  Serial.println("  Solid ON    = Connected & Idle");
+  Serial.println("  Fast Blink  = Reflow Active (4 Hz)");
+  Serial.println("  Slow Blink  = Reflow Complete (1 Hz)");
+  Serial.println("  Medium Blink = ERROR State (2 Hz)");
   Serial.println("=================================\n");
 }
 
@@ -308,11 +487,20 @@ void setupWiFi() {
     Serial.println(storedSSID);
     WiFi.begin(storedSSID, storedPassword);
     
+    // Increased timeout: 60 attempts × 500ms = 30 seconds
+    // This gives DHCP servers enough time to respond
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    while (WiFi.status() != WL_CONNECTED && attempts < 60) {
       delay(500);
       Serial.print(".");
       attempts++;
+
+      // Show progress every 10 attempts (5 seconds)
+      if (attempts % 10 == 0) {
+        Serial.print(" [");
+        Serial.print(attempts / 2);
+        Serial.print("s] ");
+      }
     }
     
     if (WiFi.status() == WL_CONNECTED) {
@@ -335,22 +523,31 @@ void setupWiFi() {
 
 void setupCaptivePortal() {
   Serial.println("Starting captive portal access point...");
-  
+
+  // Set WiFi mode to Access Point
+  WiFi.mode(WIFI_AP);
+
   IPAddress apIP(192, 168, 4, 1);
   IPAddress netMask(255, 255, 255, 0);
-  
+
   // Set AP IP configuration before starting the AP
   WiFi.softAPConfig(apIP, apIP, netMask);
-  // Start soft AP - no password so users can easily connect
-  WiFi.softAP(AP_SSID);
+
+  // Start soft AP - no password (nullptr) so users can easily connect
+  bool apStarted = WiFi.softAP(AP_SSID);
+  if (!apStarted) {
+    Serial.println("ERROR: Failed to start Access Point!");
+    return;
+  }
+
   delay(200);  // Allow AP to initialize
-  
+
   Serial.print("Captive Portal SSID: ");
   Serial.println(AP_SSID);
   Serial.print("Captive Portal IP:   ");
   Serial.println(WiFi.softAPIP());
   Serial.println("Connect to '" + String(AP_SSID) + "' and visit http://" + apIP.toString() + " to configure WiFi");
-  
+
   // Redirect all DNS queries to our IP so any URL opens the portal
   dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
   dnsServer.start(DNS_PORT, "*", apIP);
@@ -375,6 +572,11 @@ void setupWebServer() {
   // Serve main page (or captive portal page if in setup mode)
   server.on("/", HTTP_GET, handleRoot);
   
+  // Favicon handler (prevent 404 errors)
+  server.on("/favicon.ico", HTTP_GET, []() {
+    server.send(204);  // No content
+  });
+
   // Captive portal WiFi configuration endpoints
   server.on("/wifi", HTTP_GET, handleCaptivePortal);
   server.on("/wifi/save", HTTP_POST, handleWiFiSave);
@@ -411,6 +613,9 @@ void loop() {
   
   server.handleClient();
 
+  // Update LED status indicator
+  updateLED();
+
   // Read temperature periodically
   unsigned long currentTime = millis();
   if (currentTime - lastTempCheck >= tempCheckInterval) {
@@ -430,14 +635,69 @@ void loop() {
 }
 
 void readTemperature() {
+  // MAX31855 requires minimum 220ms for full conversion cycle
+  // Being conservative with 250ms to prevent false fault flags
+  static unsigned long lastReadTime = 0;
+  unsigned long currentTime = millis();
+
+  if (currentTime - lastReadTime < 250) {
+    // Too soon, use previous value
+    return;
+  }
+  lastReadTime = currentTime;
+
   Input = maxthermo.readCelsius();
   
   if (isnan(Input)) {
     thermocoupleErrorCount++;
-    Serial.println("WARNING: Thermocouple read error!");
-    
+
+    // Read error flags from MAX31855
+    uint8_t error = maxthermo.readError();
+
+    Serial.print("WARNING: Thermocouple read error! Error code: 0x");
+    Serial.print(error, HEX);
+    Serial.print(" - ");
+
+    // Decode error
+    if (error & 0x01) {
+      Serial.println("Thermocouple OPEN (not connected or broken)");
+    } else if (error & 0x02) {
+      Serial.println("Thermocouple SHORT to GND (may be false - check SPI timing)");
+    } else if (error & 0x04) {
+      Serial.println("Thermocouple SHORT to VCC (may be false - check SPI timing)");
+    } else if (error == 0) {
+      Serial.println("No fault bits set - possible SPI communication issue");
+    } else {
+      Serial.println("Multiple faults detected");
+    }
+
+    // Log to console if available
+    if (thermocoupleErrorCount == 1) {
+      addConsoleLog("WARNING: Thermocouple read error!");
+      if (error & 0x01) {
+        addConsoleLog("  Error: Thermocouple OPEN (not connected)");
+      } else if (error & 0x02) {
+        addConsoleLog("  Error: SHORT to GND (SPI timing issue?)");
+      } else if (error & 0x04) {
+        addConsoleLog("  Error: SHORT to VCC (SPI timing issue?)");
+      } else if (error == 0) {
+        addConsoleLog("  Error: SPI communication problem");
+        addConsoleLog("  Verify GPIO pins: 2->CLK, 3->CS, 4->DO");
+      }
+    }
+
     if (thermocoupleErrorCount >= maxThermocoupleErrors) {
       Serial.println("CRITICAL: Multiple thermocouple errors - EMERGENCY STOP!");
+      addConsoleLog("CRITICAL: Multiple thermocouple errors!");
+      addConsoleLog("If multimeter shows no short, this is SPI timing issue");
+      addConsoleLog("Check MAX31855 wiring:");
+      addConsoleLog("  GPIO 2 -> CLK");
+      addConsoleLog("  GPIO 3 -> CS");
+      addConsoleLog("  GPIO 4 -> DO (MISO)");
+      addConsoleLog("  3.3V -> VCC, GND -> GND");
+      if (error & 0x01) {
+        addConsoleLog("FAULT: Thermocouple OPEN - Is it plugged in?");
+      }
       emergencyStopReflow();
       currentState = ERROR_STATE;
     }
@@ -451,10 +711,13 @@ void updateReflowStateMachine() {
     return;
   }
   
-  unsigned long elapsedTime = millis() - reflowStartTime;
   unsigned long stateElapsed = millis() - stateStartTime;
   
   switch (currentState) {
+    case IDLE:
+      // Do nothing in IDLE state - waiting for user to start
+      break;
+
     case PREHEAT:
       Setpoint = preheatTemp;
       if (useTemperatureBasedTransitions) {
@@ -528,6 +791,17 @@ void updateReflowStateMachine() {
     case COMPLETE:
       Setpoint = cooldownTemp;
       digitalWrite(SSR_PIN, LOW);
+      break;
+
+    case ERROR_STATE:
+      // In error state, turn off heater and wait for user intervention
+      Setpoint = 0;
+      digitalWrite(SSR_PIN, LOW);
+      break;
+
+    case PID_TUNING:
+      // PID tuning is handled separately, just ensure safety
+      digitalWrite(SSR_PIN, pidTuningActive ? HIGH : LOW);
       break;
   }
   
@@ -820,6 +1094,11 @@ void handleRoot() {
     return;
   }
 
+  // Add cache control headers to prevent browser caching
+  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  server.sendHeader("Pragma", "no-cache");
+  server.sendHeader("Expires", "0");
+
   String html = F(R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -827,6 +1106,7 @@ void handleRoot() {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Reflow Oven Controller</title>
+  <!-- Cache buster: v1.1 - Force reload after updates -->
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -992,10 +1272,13 @@ void handleRoot() {
       max-height: 400px;
       overflow-y: auto;
       margin-top: 15px;
-      display: none;
+      display: block;
     }
     .console-container.visible {
       display: block;
+    }
+    .console-container.hidden {
+      display: none;
     }
     .console-line {
       margin: 2px 0;
@@ -1182,7 +1465,8 @@ void handleRoot() {
               position: 'top'
             }
           }
-        });
+        }
+      });
     }
     
     function updateChart(temp, setpoint, elapsed) {
@@ -1213,18 +1497,51 @@ void handleRoot() {
     
     function connectWebSocket() {
       // Using HTTP polling instead of WebSocket for Pico W compatibility
-      setInterval(function() {
-        fetch('/api/status')
-          .then(r => r.json())
-          .then(data => updateDisplay(data))
-          .catch(err => console.error('Error fetching status:', err));
-      }, 500);  // Poll every 500ms for responsive updates
+
+      // Fetch status immediately on page load
+      fetchStatus();
+
+      // Then poll every 500ms
+      setInterval(fetchStatus, 500);
+    }
+
+    function fetchStatus() {
+      fetch('/api/status')
+        .then(r => {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(data => {
+          console.log('Status update:', data);  // Debug logging
+          updateDisplay(data);
+        })
+        .catch(err => {
+          console.error('Error fetching status:', err);
+          // Show connection error in UI
+          document.getElementById('currentTemp').textContent = 'OFFLINE';
+          document.getElementById('targetTemp').textContent = '--';
+        });
     }
     
     function updateDisplay(data) {
-      document.getElementById('currentTemp').textContent = data.temp.toFixed(1) + '°C';
-      document.getElementById('targetTemp').textContent = data.setpoint.toFixed(1) + '°C';
-      
+      // Handle NaN temperature gracefully
+      const tempText = (data.temp !== null && !isNaN(data.temp)) ? data.temp.toFixed(1) + '°C' : 'ERROR';
+      const setpointText = (data.setpoint !== null && !isNaN(data.setpoint)) ? data.setpoint.toFixed(1) + '°C' : '--';
+
+      const tempEl = document.getElementById('currentTemp');
+      tempEl.textContent = tempText;
+
+      // Highlight error state
+      if (tempText === 'ERROR') {
+        tempEl.style.color = '#dc3545';
+        tempEl.style.fontWeight = 'bold';
+      } else {
+        tempEl.style.color = '';
+        tempEl.style.fontWeight = '';
+      }
+
+      document.getElementById('targetTemp').textContent = setpointText;
+
       const stateEl = document.getElementById('state');
       stateEl.textContent = data.state;
       stateEl.className = 'status-value state-' + data.state;
@@ -1238,7 +1555,9 @@ void handleRoot() {
       // Update button states
       const isActive = data.state !== 'IDLE' && data.state !== 'COMPLETE' && data.state !== 'ERROR';
       const isTuning = data.state === 'PID_TUNING';
-      document.getElementById('startBtn').disabled = isActive;
+      const canStart = (data.state === 'IDLE' || data.state === 'COMPLETE' || data.state === 'ERROR');
+
+      document.getElementById('startBtn').disabled = !canStart || isTuning;
       document.getElementById('stopBtn').disabled = !isActive;
       document.getElementById('tuneBtn').disabled = (isActive && !isTuning);
       
@@ -1379,8 +1698,14 @@ void handleRoot() {
     }
     
     function toggleConsole() {
-      const console = document.getElementById('console');
-      console.classList.toggle('visible');
+      const consoleEl = document.getElementById('console');
+      if (consoleEl.classList.contains('hidden')) {
+        consoleEl.classList.remove('hidden');
+        consoleEl.classList.add('visible');
+      } else {
+        consoleEl.classList.remove('visible');
+        consoleEl.classList.add('hidden');
+      }
     }
     
     let consolePolling = null;
@@ -1441,15 +1766,17 @@ void handleCaptivePortal() {
   if (networkCount > 0) {
     for (int i = 0; i < networkCount; i++) {
       String encLabel;
-      switch (WiFi.encryptionType(i)) {
+      uint8_t encType = WiFi.encryptionType(i);
+      switch (encType) {
+        case ENC_TYPE_NONE: encLabel = " (Open)"; break;
         case ENC_TYPE_WEP:  encLabel = " (WEP)";  break;
         case ENC_TYPE_TKIP: encLabel = " (WPA)";  break;
         case ENC_TYPE_CCMP: encLabel = " (WPA2)"; break;
-        case ENC_TYPE_NONE: encLabel = " (Open)"; break;
-        default:            encLabel = " (Enc)";  break;
+        case ENC_TYPE_AUTO: encLabel = " (WPA/WPA2)"; break;
+        default:            encLabel = " (Encrypted)";  break;
       }
-      networkOptions += "<option value=\"" + WiFi.SSID(i) + "\">" +
-                        WiFi.SSID(i) + encLabel + " (" + String(WiFi.RSSI(i)) + " dBm)</option>\n";
+      networkOptions += "<option value=\"" + String(WiFi.SSID(i)) + "\">" +
+                        String(WiFi.SSID(i)) + encLabel + " (" + String(WiFi.RSSI(i)) + " dBm)</option>\n";
     }
   } else {
     networkOptions = "<option value=''>-- No networks found; enter SSID below --</option>\n";
@@ -1598,7 +1925,7 @@ void handleWiFiSave() {
   server.send(200, "text/html", html);
 
   delay(REBOOT_DELAY_MS);
-  rp2040.reboot();
+  rp2040.reboot();  // Reboot using arduino-pico reboot function
 }
 
 void handleNotFound() {
@@ -1612,22 +1939,34 @@ void handleNotFound() {
 }
 
 void handleStatus() {
-  StaticJsonDocument<256> doc;
-  doc["temp"] = Input;
-  doc["setpoint"] = Setpoint;
+  JsonDocument doc;
+
+  // Handle NaN temperature gracefully in JSON
+  if (isnan(Input)) {
+    doc["temp"] = nullptr;  // Send null instead of NaN
+  } else {
+    doc["temp"] = Input;
+  }
+
+  if (isnan(Setpoint)) {
+    doc["setpoint"] = nullptr;
+  } else {
+    doc["setpoint"] = Setpoint;
+  }
+
   doc["state"] = stateNames[currentState];
   doc["elapsed"] = (currentState != IDLE) ? (millis() - reflowStartTime) : 0;
   doc["ssr"] = digitalRead(SSR_PIN);
   doc["output"] = Output;
   doc["tuning"] = pidTuningActive;
-  
+
   String response;
   serializeJson(doc, response);
   server.send(200, "application/json", response);
 }
 
 void handleGetConfig() {
-  StaticJsonDocument<512> doc;
+  JsonDocument doc;
   doc["preheatTemp"] = preheatTemp;
   doc["preheatTime"] = preheatTime;
   doc["soakTemp"] = soakTemp;
@@ -1639,7 +1978,7 @@ void handleGetConfig() {
   doc["Kp"] = Kp;
   doc["Ki"] = Ki;
   doc["Kd"] = Kd;
-  
+
   String response;
   serializeJson(doc, response);
   server.send(200, "application/json", response);
@@ -1647,9 +1986,9 @@ void handleGetConfig() {
 
 void handleSetConfig() {
   if (server.hasArg("plain")) {
-    StaticJsonDocument<512> doc;
+    JsonDocument doc;
     DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    
+
     if (!error) {
       preheatTemp = doc["preheatTemp"] | preheatTemp;
       preheatTime = doc["preheatTime"] | preheatTime;
@@ -1657,9 +1996,9 @@ void handleSetConfig() {
       soakTime = doc["soakTime"] | soakTime;
       reflowTemp = doc["reflowTemp"] | reflowTemp;
       reflowTime = doc["reflowTime"] | reflowTime;
-      
+
       // Update PID parameters if provided
-      if (doc.containsKey("Kp")) {
+      if (doc["Kp"].is<double>()) {
         Kp = doc["Kp"];
         Ki = doc["Ki"];
         Kd = doc["Kd"];
@@ -1669,15 +2008,15 @@ void handleSetConfig() {
         Serial.print(", Ki: "); Serial.print(Ki);
         Serial.print(", Kd: "); Serial.println(Kd);
       }
-      
+
       // Save to EEPROM
       saveConfigToEEPROM();
-      
+
       Serial.println("Configuration updated:");
       Serial.print("Preheat: "); Serial.print(preheatTemp); Serial.print("°C for "); Serial.print(preheatTime/1000); Serial.println("s");
       Serial.print("Soak: "); Serial.print(soakTemp); Serial.print("°C for "); Serial.print(soakTime/1000); Serial.println("s");
       Serial.print("Reflow: "); Serial.print(reflowTemp); Serial.print("°C for "); Serial.print(reflowTime/1000); Serial.println("s");
-      
+
       server.send(200, "application/json", "{\"status\":\"ok\"}");
     } else {
       server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
