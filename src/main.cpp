@@ -23,6 +23,7 @@
 
 #include <Adafruit_MAX31855.h>
 #include <ArduinoJson.h>
+#include <DNSServer.h>
 #include <EEPROM.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -35,13 +36,20 @@
 #define THERMO_DO 16    // GPIO16 (MISO)
 #define SSR_PIN 15      // GPIO15
 
-// WiFi Configuration - Change these to your network or leave for AP mode
-const char* ssid = "Unifi-U6";         // AP mode SSID
-const char* password = "20C9D44FFD";      // AP mode password (min 8 chars)
-bool useAPMode = false;                   // Set to false to connect to existing WiFi
+// WiFi Configuration
+// AP mode credentials (used for captive portal setup)
+const char* AP_SSID = "ReflowOven-Setup";   // No password for easy access
 
-// Web Server and WebSocket
+// Stored WiFi credentials (loaded from EEPROM, configured via captive portal)
+char storedSSID[32] = "";
+char storedPassword[64] = "";
+
+// Web Server, DNS Server, and captive portal state
 WebServer server(80);
+DNSServer dnsServer;
+bool captivePortalActive = false;
+const byte DNS_PORT = 53;
+const unsigned long REBOOT_DELAY_MS = 1500;  // Delay before reboot to allow HTTP response to flush
 
 // MAX31855 Thermocouple
 Adafruit_MAX31855 maxthermo = Adafruit_MAX31855(THERMO_CLK, THERMO_CS, THERMO_DO);
@@ -62,8 +70,8 @@ double Kp = 2, Ki = 5, Kd = 1;
 PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 
 // EEPROM Configuration
-#define EEPROM_SIZE 512  // Allocate 512 bytes (actual usage ~92 bytes, extra space for future expansion)
-#define EEPROM_MAGIC 0xABCD  // Magic number to verify valid EEPROM data
+#define EEPROM_SIZE 512  // Allocate 512 bytes (actual usage ~170 bytes, extra space for future expansion)
+#define EEPROM_MAGIC 0xABCE  // Magic number to verify valid EEPROM data (bumped from 0xABCD to include WiFi creds)
 
 struct EEPROMConfig {
   uint16_t magic;
@@ -78,6 +86,8 @@ struct EEPROMConfig {
   double Kp;
   double Ki;
   double Kd;
+  char wifiSSID[32];
+  char wifiPassword[64];
 };
 
 // Temperature-based state transition settings
@@ -102,6 +112,7 @@ void changeState(ReflowState newState);
 void calculatePIDFromAutoTune();
 void emergencyStopReflow();
 void setupWiFi();
+void setupCaptivePortal();
 void setupWebServer();
 void readTemperature();
 void updatePIDTuningStateMachine();
@@ -197,6 +208,12 @@ void loadConfigFromEEPROM() {
     Ki = config.Ki;
     Kd = config.Kd;
     
+    // Load WiFi credentials
+    strncpy(storedSSID, config.wifiSSID, sizeof(storedSSID) - 1);
+    storedSSID[sizeof(storedSSID) - 1] = '\0';
+    strncpy(storedPassword, config.wifiPassword, sizeof(storedPassword) - 1);
+    storedPassword[sizeof(storedPassword) - 1] = '\0';
+    
     // Update PID with loaded values
     myPID.SetTunings(Kp, Ki, Kd);
     
@@ -204,6 +221,10 @@ void loadConfigFromEEPROM() {
     Serial.print("PID Values - Kp: "); Serial.print(Kp);
     Serial.print(", Ki: "); Serial.print(Ki);
     Serial.print(", Kd: "); Serial.println(Kd);
+    if (strlen(storedSSID) > 0) {
+      Serial.print("Stored WiFi SSID: ");
+      Serial.println(storedSSID);
+    }
   } else {
     Serial.println("No valid EEPROM configuration found, using defaults");
   }
@@ -223,6 +244,10 @@ void saveConfigToEEPROM() {
   config.Kp = Kp;
   config.Ki = Ki;
   config.Kd = Kd;
+  strncpy(config.wifiSSID, storedSSID, sizeof(config.wifiSSID) - 1);
+  config.wifiSSID[sizeof(config.wifiSSID) - 1] = '\0';
+  strncpy(config.wifiPassword, storedPassword, sizeof(config.wifiPassword) - 1);
+  config.wifiPassword[sizeof(config.wifiPassword) - 1] = '\0';
   
   EEPROM.put(0, config);
   EEPROM.commit();
@@ -277,21 +302,11 @@ void setup() {
 }
 
 void setupWiFi() {
-  WiFi.mode(WIFI_AP_STA);
-  
-  if (useAPMode) {
-    Serial.println("Starting WiFi Access Point...");
-    WiFi.softAP(ssid, password);
-    IPAddress IP = WiFi.softAPIP();
-    Serial.print("AP SSID: ");
-    Serial.println(ssid);
-    Serial.print("AP IP address: ");
-    Serial.println(IP);
-    Serial.println("Connect to this network and navigate to http://" + IP.toString());
-  } else {
+  // Try to connect using stored credentials
+  if (strlen(storedSSID) > 0) {
     Serial.print("Connecting to WiFi: ");
-    Serial.println(ssid);
-    WiFi.begin(ssid, password);
+    Serial.println(storedSSID);
+    WiFi.begin(storedSSID, storedPassword);
     
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 20) {
@@ -304,13 +319,42 @@ void setupWiFi() {
       Serial.println("\nWiFi connected!");
       Serial.print("IP address: ");
       Serial.println(WiFi.localIP());
-    } else {
-      Serial.println("\nWiFi connection failed! Starting AP mode...");
-      WiFi.softAP(ssid, password);
-      Serial.print("AP IP: ");
-      Serial.println(WiFi.softAPIP());
+      return;
     }
+    
+    Serial.println("\nWiFi connection failed! Starting captive portal...");
+    WiFi.disconnect();
+    WiFi.end();
+    delay(100);
+  } else {
+    Serial.println("No WiFi credentials stored. Starting captive portal...");
   }
+  
+  setupCaptivePortal();
+}
+
+void setupCaptivePortal() {
+  Serial.println("Starting captive portal access point...");
+  
+  IPAddress apIP(192, 168, 4, 1);
+  IPAddress netMask(255, 255, 255, 0);
+  
+  // Set AP IP configuration before starting the AP
+  WiFi.softAPConfig(apIP, apIP, netMask);
+  // Start soft AP - no password so users can easily connect
+  WiFi.softAP(AP_SSID);
+  delay(200);  // Allow AP to initialize
+  
+  Serial.print("Captive Portal SSID: ");
+  Serial.println(AP_SSID);
+  Serial.print("Captive Portal IP:   ");
+  Serial.println(WiFi.softAPIP());
+  Serial.println("Connect to '" + String(AP_SSID) + "' and visit http://" + apIP.toString() + " to configure WiFi");
+  
+  // Redirect all DNS queries to our IP so any URL opens the portal
+  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  dnsServer.start(DNS_PORT, "*", apIP);
+  captivePortalActive = true;
 }
 
 // Forward declarations for web server handler functions
@@ -323,12 +367,26 @@ void handleStop();
 void handleDataLog();
 void handleTunePID();
 void handleGetConsoleLog();
+void handleCaptivePortal();
+void handleWiFiSave();
+void handleNotFound();
 
 void setupWebServer() {
-  // Serve main page
+  // Serve main page (or captive portal page if in setup mode)
   server.on("/", HTTP_GET, handleRoot);
   
-  // API endpoints
+  // Captive portal WiFi configuration endpoints
+  server.on("/wifi", HTTP_GET, handleCaptivePortal);
+  server.on("/wifi/save", HTTP_POST, handleWiFiSave);
+  
+  // Captive portal detection URLs used by various OS/browsers
+  server.on("/generate_204", HTTP_GET, handleCaptivePortal);         // Android
+  server.on("/fwlink", HTTP_GET, handleCaptivePortal);               // Windows
+  server.on("/hotspot-detect.html", HTTP_GET, handleCaptivePortal);  // Apple
+  server.on("/connecttest.txt", HTTP_GET, handleCaptivePortal);      // Windows
+  server.on("/ncsi.txt", HTTP_GET, handleCaptivePortal);             // Windows
+  
+  // API endpoints (only relevant when WiFi is connected in station mode)
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/config", HTTP_GET, handleGetConfig);
   server.on("/api/config", HTTP_POST, handleSetConfig);
@@ -338,11 +396,19 @@ void setupWebServer() {
   server.on("/api/tune-pid", HTTP_POST, handleTunePID);
   server.on("/api/console", HTTP_GET, handleGetConsoleLog);
   
+  // Catch-all: redirect unknown paths to root (needed for captive portal)
+  server.onNotFound(handleNotFound);
+  
   server.begin();
   Serial.println("HTTP server started on port 80");
 }
 
 void loop() {
+  // Process DNS queries when captive portal is active
+  if (captivePortalActive) {
+    dnsServer.processNextRequest();
+  }
+  
   server.handleClient();
 
   // Read temperature periodically
@@ -747,6 +813,13 @@ void logDataPoint() {
 // ==================== Web Server Handlers ====================
 
 void handleRoot() {
+  // If we're in captive portal mode, redirect to WiFi setup page
+  if (captivePortalActive) {
+    server.sendHeader("Location", "/wifi", true);
+    server.send(302, "text/plain", "");
+    return;
+  }
+
   String html = F(R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -1196,7 +1269,7 @@ void handleRoot() {
     function stopReflow() {
       if (confirm('Are you sure you want to emergency stop the reflow process?')) {
         fetch('/api/stop', { method: 'POST' })
-          .then r => r.json())
+          .then(r => r.json())
           .then(data => console.log('Reflow stopped:', data))
           .catch(err => console.error('Error:', err));
       }
@@ -1359,6 +1432,183 @@ void handleRoot() {
 )rawliteral");
   
   server.send(200, "text/html", html);
+}
+
+void handleCaptivePortal() {
+  // Scan for available networks to populate the dropdown
+  int networkCount = WiFi.scanNetworks();
+  String networkOptions = "";
+  if (networkCount > 0) {
+    for (int i = 0; i < networkCount; i++) {
+      String encLabel;
+      switch (WiFi.encryptionType(i)) {
+        case ENC_TYPE_WEP:  encLabel = " (WEP)";  break;
+        case ENC_TYPE_TKIP: encLabel = " (WPA)";  break;
+        case ENC_TYPE_CCMP: encLabel = " (WPA2)"; break;
+        case ENC_TYPE_NONE: encLabel = " (Open)"; break;
+        default:            encLabel = " (Enc)";  break;
+      }
+      networkOptions += "<option value=\"" + WiFi.SSID(i) + "\">" +
+                        WiFi.SSID(i) + encLabel + " (" + String(WiFi.RSSI(i)) + " dBm)</option>\n";
+    }
+  } else {
+    networkOptions = "<option value=''>-- No networks found; enter SSID below --</option>\n";
+  }
+
+  String html = F(R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reflow Oven - WiFi Setup</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 30px;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    }
+    h1 { color: #333; margin-bottom: 8px; font-size: 1.6em; }
+    p.subtitle { color: #666; margin-bottom: 24px; font-size: 0.95em; }
+    label { display: block; font-weight: bold; color: #555; margin-bottom: 6px; }
+    select, input[type="text"], input[type="password"] {
+      width: 100%;
+      padding: 10px 12px;
+      border: 2px solid #ddd;
+      border-radius: 6px;
+      font-size: 1em;
+      margin-bottom: 16px;
+      transition: border-color 0.2s;
+    }
+    select:focus, input:focus { outline: none; border-color: #667eea; }
+    button {
+      width: 100%;
+      padding: 14px;
+      background: #667eea;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 1.1em;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #5568d4; }
+    .notice {
+      margin-top: 16px;
+      padding: 12px;
+      background: #fff3cd;
+      border-left: 4px solid #ffc107;
+      border-radius: 4px;
+      font-size: 0.9em;
+      color: #856404;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🔥 Reflow Oven Setup</h1>
+    <p class="subtitle">Connect your oven to a WiFi network to access the control interface.</p>
+    <form method="POST" action="/wifi/save">
+      <label for="ssid">WiFi Network</label>
+      <select name="ssid" id="ssid" onchange="document.getElementById('ssid_manual').value=this.value">
+        <option value="">-- Select a network --</option>
+)rawliteral");
+
+  html += networkOptions;
+
+  html += F(R"rawliteral(
+      </select>
+      <label for="ssid_manual">Or enter SSID manually</label>
+      <input type="text" id="ssid_manual" name="ssid_manual" placeholder="Network name (SSID)" maxlength="31">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" placeholder="Leave blank for open networks" maxlength="63">
+      <button type="submit">💾 Save &amp; Connect</button>
+    </form>
+    <div class="notice">
+      ⚠️ The device will restart and attempt to connect. If the connection fails, this setup portal will reappear.
+    </div>
+  </div>
+  <script>
+    // Sync manual SSID field back to select when user types
+    document.getElementById('ssid_manual').addEventListener('input', function() {
+      document.getElementById('ssid').value = '';
+    });
+  </script>
+</body>
+</html>
+)rawliteral");
+
+  server.send(200, "text/html", html);
+}
+
+void handleWiFiSave() {
+  String newSSID = "";
+  String newPassword = "";
+
+  // Prefer manual entry if filled in, otherwise use dropdown selection
+  if (server.hasArg("ssid_manual") && server.arg("ssid_manual").length() > 0) {
+    newSSID = server.arg("ssid_manual");
+  } else if (server.hasArg("ssid")) {
+    newSSID = server.arg("ssid");
+  }
+
+  if (server.hasArg("password")) {
+    newPassword = server.arg("password");
+  }
+
+  if (newSSID.length() == 0) {
+    server.send(400, "text/html", "<h2>Error: No SSID provided.</h2><a href='/wifi'>Go back</a>");
+    return;
+  }
+
+  // Save credentials to EEPROM
+  strncpy(storedSSID, newSSID.c_str(), sizeof(storedSSID) - 1);
+  storedSSID[sizeof(storedSSID) - 1] = '\0';
+  strncpy(storedPassword, newPassword.c_str(), sizeof(storedPassword) - 1);
+  storedPassword[sizeof(storedPassword) - 1] = '\0';
+  saveConfigToEEPROM();
+
+  Serial.print("WiFi credentials saved. SSID: ");
+  Serial.println(storedSSID);
+  Serial.println("Rebooting to connect...");
+
+  String html = "<html><head><meta charset='UTF-8'>"
+                "<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;"
+                "min-height:100vh;background:linear-gradient(135deg,#667eea,#764ba2);margin:0;}"
+                ".card{background:white;padding:30px;border-radius:12px;text-align:center;max-width:380px;}"
+                "h2{color:#333;margin-bottom:10px;}p{color:#666;}</style></head>"
+                "<body><div class='card'><h2>✅ Credentials Saved</h2>"
+                "<p>Connecting to <strong>" + newSSID + "</strong>...</p>"
+                "<p>The device is restarting. If the connection succeeds, find it on your network. "
+                "If it fails, reconnect to <strong>ReflowOven-Setup</strong> to try again.</p></div></body></html>";
+  server.send(200, "text/html", html);
+
+  delay(REBOOT_DELAY_MS);
+  rp2040.reboot();
+}
+
+void handleNotFound() {
+  // In captive portal mode, redirect everything to the portal page
+  if (captivePortalActive) {
+    server.sendHeader("Location", "/wifi", true);
+    server.send(302, "text/plain", "");
+    return;
+  }
+  server.send(404, "text/plain", "Not found");
 }
 
 void handleStatus() {
