@@ -1,0 +1,92 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="HtmlUnknownAttribute" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="myValues">
+        <value>
+          <list size="18">
+            <item index="0" class="java.lang.String" itemvalue="x-model" />
+            <item index="1" class="java.lang.String" itemvalue="@click" />
+            <item index="2" class="java.lang.String" itemvalue="@click.away" />
+            <item index="3" class="java.lang.String" itemvalue="x-text" />
+            <item index="4" class="java.lang.String" itemvalue="x-for" />
+            <item index="5" class="java.lang.String" itemvalue=":key" />
+            <item index="6" class="java.lang.String" itemvalue="x-cloak" />
+            <item index="7" class="java.lang.String" itemvalue="x-show" />
+            <item index="8" class="java.lang.String" itemvalue=":style" />
+            <item index="9" class="java.lang.String" itemvalue=":disabled" />
+            <item index="10" class="java.lang.String" itemvalue="@change" />
+            <item index="11" class="java.lang.String" itemvalue=":class" />
+            <item index="12" class="java.lang.String" itemvalue="@keydown.escape.window" />
+            <item index="13" class="java.lang.String" itemvalue="x-data" />
+            <item index="14" class="java.lang.String" itemvalue=":value" />
+            <item index="15" class="java.lang.String" itemvalue="x-transition:enter" />
+            <item index="16" class="java.lang.String" itemvalue="x-transition:enter-start" />
+            <item index="17" class="java.lang.String" itemvalue="x-transition:enter-end" />
+          </list>
+        </value>
+      </option>
+      <option name="myCustomValuesEnabled" value="true" />
+    </inspection_tool>
+    <inspection_tool class="PyCompatibilityInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ourVersions">
+        <value>
+          <list size="2">
+            <item index="0" class="java.lang.String" itemvalue="3.15" />
+            <item index="1" class="java.lang.String" itemvalue="3.14" />
+          </list>
+        </value>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="false" level="WARNING" enabled_by_default="false">
+      <option name="ignoredPackages">
+        <list>
+          <option value="Flask" />
+          <option value="Flask-SQLAlchemy" />
+          <option value="Flask-Login" />
+          <option value="Flask-WTF" />
+          <option value="Flask-Migrate" />
+          <option value="Flask-SocketIO" />
+          <option value="fastapi" />
+          <option value="uvicorn" />
+          <option value="waitress" />
+          <option value="eventlet" />
+          <option value="psycopg2-binary" />
+          <option value="redis" />
+          <option value="alembic" />
+          <option value="simplejson" />
+          <option value="wtforms" />
+          <option value="requests" />
+          <option value="requests-oauthlib" />
+          <option value="ijson" />
+          <option value="pandas" />
+          <option value="matplotlib" />
+          <option value="seaborn" />
+          <option value="plotly" />
+          <option value="weasyprint" />
+          <option value="pydyf" />
+          <option value="reportlab" />
+          <option value="pdfkit" />
+          <option value="openpyxl" />
+          <option value="Pillow" />
+          <option value="pydenticon" />
+          <option value="discord.py" />
+          <option value="boto3" />
+          <option value="influxdb-client" />
+          <option value="pyzmq" />
+          <option value="psutil" />
+          <option value="python-dateutil" />
+          <option value="pytz" />
+          <option value="click" />
+          <option value="setuptools" />
+          <option value="python-dotenv" />
+          <option value="apscheduler" />
+          <option value="feedparser" />
+          <option value="selenium" />
+          <option value="google-generativeai" />
+          <option value="pytest" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>

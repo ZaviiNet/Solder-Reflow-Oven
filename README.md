@@ -47,6 +47,21 @@ This repository contains complete reflow oven controllers for multiple platforms
 
 ## Documentation
 
+### Development Environment Setup
+
+- **[CLION_SETUP.md](CLION_SETUP.md)** - **NEW!** CLion + PlatformIO setup guide
+  - Complete IDE integration guide
+  - PlatformIO installation and configuration
+  - Building and uploading from CLion
+  - Code completion and navigation
+  - Multi-platform development workflow
+  - Troubleshooting and tips
+
+- **[README_PLATFORMIO.md](README_PLATFORMIO.md)** - PlatformIO quick reference
+  - Quick start commands
+  - Project structure
+  - Library dependencies
+
 ### Platform Selection
 
 - **[PLATFORM_COMPARISON.md](PLATFORM_COMPARISON.md)** - **NEW!** Choose between ESP8266 and Pico W
@@ -88,6 +103,13 @@ This repository contains complete reflow oven controllers for multiple platforms
   - Understanding PID parameters
   - Troubleshooting temperature control
   - Technical algorithm details
+
+- **[PID_AUTOTUNE_LIBRARY_GUIDE.md](PID_AUTOTUNE_LIBRARY_GUIDE.md)** - **NEW!** PID AutoTune library integration
+  - Using the PID_AutoTune library instead of custom implementation
+  - Library API reference
+  - Configuration examples
+  - Multi-temperature tuning
+  - Advantages and best practices
 
 - **[WEB_INTERFACE_README.md](WEB_INTERFACE_README.md)** - Web interface guide (ESP8266)
   - Pin connections and wiring diagrams
