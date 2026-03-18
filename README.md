@@ -10,7 +10,7 @@ This repository contains complete reflow oven controllers for multiple platforms
 - **Better dependency management**: Automatic library version control
 - **Cross-platform**: Works on Windows, Mac, and Linux
 - **IDE integration**: VS Code, CLion, Atom support
-- See **[PLATFORMIO_SETUP.md](PLATFORMIO_SETUP.md)** for complete setup guide
+- See **[Documentation/PLATFORMIO_SETUP.md](Documentation/PLATFORMIO_SETUP.md)** for complete setup guide
 
 **Note**: Arduino .ino files are still available for Arduino IDE users.
 
@@ -56,7 +56,7 @@ cd "Electrical Design/SolderReflowOvenPicoW"
 pio run --target upload
 ```
 
-See **[PLATFORMIO_SETUP.md](PLATFORMIO_SETUP.md)** for detailed instructions.
+See **[Documentation/PLATFORMIO_SETUP.md](Documentation/PLATFORMIO_SETUP.md)** for detailed instructions.
 
 ### Using Arduino IDE (Alternative):
 
@@ -77,111 +77,147 @@ See **[PLATFORMIO_SETUP.md](PLATFORMIO_SETUP.md)** for detailed instructions.
 
 ## Documentation
 
+**All documentation files are located in the [Documentation/](Documentation/) folder.**
+
+### Quick Start
+
+- **[Documentation/START_HERE.md](Documentation/START_HERE.md)** - Start here for setup and first steps
+  - Quick setup guide
+  - Hardware assembly
+  - First reflow walkthrough
+
+- **[Documentation/QUICK_REFERENCE.md](Documentation/QUICK_REFERENCE.md)** - Quick reference card
+  - Key commands and shortcuts
+  - API endpoints summary
+  - Temperature profiles at a glance
+  - Troubleshooting quick tips
+
 ### Development Environment Setup
 
-- **[CLION_SETUP.md](CLION_SETUP.md)** - **NEW!** CLion + PlatformIO setup guide
-  - Complete IDE integration guide
-  - PlatformIO installation and configuration
-  - Building and uploading from CLion
-  - Code completion and navigation
-  - Multi-platform development workflow
-  - Troubleshooting and tips
-
-- **[README_PLATFORMIO.md](README_PLATFORMIO.md)** - PlatformIO quick reference
-  - Quick start commands
-  - Project structure
-  - Library dependencies
-
-### Platform Selection
-
-- **[PLATFORM_COMPARISON.md](PLATFORM_COMPARISON.md)** - **NEW!** Choose between ESP8266 and Pico W
-  - Side-by-side feature comparison
-  - Performance metrics
-  - When to choose each platform
-  - Upgrade recommendations
-  - Migration effort estimate
-
-### Platform-Specific Guides
-
-- **[PICO_W_MIGRATION_GUIDE.md](PICO_W_MIGRATION_GUIDE.md)** - **NEW!** Upgrade from ESP8266 to Pico W
-  - Why upgrade to Pico W
-  - Hardware migration steps
-  - Software setup for Pico W
-  - Pin mapping and wiring changes
-  - Performance comparison
-  - Troubleshooting
-
-- **[Electrical Design/SolderReflowOvenPicoW/README_PICOW.md](Electrical%20Design/SolderReflowOvenPicoW/README_PICOW.md)** - **NEW!** Complete Pico W documentation
-  - Dual-core architecture explained
-  - Pin connections and wiring
-  - Setup and installation
-  - API reference
-  - Advanced configuration
-
-### General Guides (Apply to Both Platforms)
-
-- **[PRESET_PROFILES_FEATURE.md](PRESET_PROFILES_FEATURE.md)** - 🆕 **NEW!** Preset profile system
-  - Save and load temperature profiles
-  - 5 built-in JEDEC-compliant presets
-  - Prevent component damage (melted headers, etc.)
-  - Custom preset creation
-  - API reference
-
-- **[REFLOW_TEMPERATURE_STANDARDS.md](REFLOW_TEMPERATURE_STANDARDS.md)** - 🆕 **NEW!** Industry standards reference
-  - JEDEC J-STD-020 compliance details
-  - Temperature ranges by solder type
-  - Plastic component ratings and limitations
-  - Time at temperature constraints (30-60s max)
-  - Safety margins and best practices
-  - Troubleshooting thermal damage
-
-- **[PRESET_QUICK_START.md](PRESET_QUICK_START.md)** - 🆕 **NEW!** Quick start for presets
-  - Immediate solution for heat-sensitive components
-  - Temperature recommendations by component type
-  - Step-by-step preset usage
-  - Pro tips and troubleshooting
-
-- **[PLATFORMIO_SETUP.md](PLATFORMIO_SETUP.md)** - **NEW!** PlatformIO setup and usage guide
+- **[Documentation/PLATFORMIO_SETUP.md](Documentation/PLATFORMIO_SETUP.md)** - PlatformIO setup and usage guide
   - Why PlatformIO
   - Installation instructions
   - Building and uploading
   - IDE integration
   - Troubleshooting
 
-- **[AUTO_TUNE_FEATURE.md](AUTO_TUNE_FEATURE.md)** - Automatic PID tuning feature guide
+- **[Documentation/CLION_SETUP.md](Documentation/CLION_SETUP.md)** - CLion + PlatformIO setup guide
+  - Complete IDE integration guide
+  - PlatformIO installation and configuration
+  - Building and uploading from CLion
+  - Code completion and navigation
+  - Multi-platform development workflow
+
+- **[Documentation/README_PLATFORMIO.md](Documentation/README_PLATFORMIO.md)** - PlatformIO quick reference
+  - Quick start commands
+  - Project structure
+  - Library dependencies
+
+### Platform Selection
+
+- **[PLATFORM_COMPARISON.md](PLATFORM_COMPARISON.md)** - Choose between ESP8266 and Pico W
+  - Side-by-side feature comparison
+  - Performance metrics
+  - When to choose each platform
+  - Upgrade recommendations
+
+### Preset Profile System (JEDEC-Compliant)
+
+- **[Documentation/PRESET_PROFILES_FEATURE.md](Documentation/PRESET_PROFILES_FEATURE.md)** - 🆕 Complete preset system guide
+  - Save and load temperature profiles
+  - 5 built-in JEDEC-compliant presets
+  - Prevent component damage (melted headers, etc.)
+  - Custom preset creation
+  - API reference
+
+- **[Documentation/REFLOW_TEMPERATURE_STANDARDS.md](Documentation/REFLOW_TEMPERATURE_STANDARDS.md)** - 🆕 Industry standards reference
+  - JEDEC J-STD-020 compliance details
+  - Temperature ranges by solder type (SAC305, Sn63/Pb37)
+  - Plastic component ratings and limitations
+  - Time at temperature constraints (30-60s max)
+  - Safety margins and best practices
+  - Troubleshooting thermal damage
+
+- **[Documentation/PRESET_QUICK_START.md](Documentation/PRESET_QUICK_START.md)** - 🆕 Quick start for presets
+  - Immediate solution for heat-sensitive components
+  - Temperature recommendations by component type
+  - Step-by-step preset usage
+  - Pro tips and troubleshooting
+
+### PID Tuning and Control
+
+- **[Documentation/AUTO_TUNE_FEATURE.md](Documentation/AUTO_TUNE_FEATURE.md)** - Automatic PID tuning feature
   - One-click auto-tuning process
   - How the algorithm works
   - Step-by-step usage instructions
   - Console log functionality
   - API endpoints
 
-- **[PID_TUNING_GUIDE.md](PID_TUNING_GUIDE.md)** - Complete PID tuning guide
+- **[Documentation/PID_TUNING_GUIDE.md](Documentation/PID_TUNING_GUIDE.md)** - Complete PID tuning guide
   - Automatic tuning instructions
   - Manual tuning guide
   - Understanding PID parameters
   - Troubleshooting temperature control
   - Technical algorithm details
 
-- **[PID_AUTOTUNE_LIBRARY_GUIDE.md](PID_AUTOTUNE_LIBRARY_GUIDE.md)** - **NEW!** PID AutoTune library integration
-  - Using the PID_AutoTune library instead of custom implementation
+- **[Documentation/PID_AUTOTUNE_LIBRARY_GUIDE.md](Documentation/PID_AUTOTUNE_LIBRARY_GUIDE.md)** - PID AutoTune library integration
+  - Using the PID_AutoTune library
   - Library API reference
   - Configuration examples
   - Multi-temperature tuning
-  - Advantages and best practices
 
-- **[WEB_INTERFACE_README.md](WEB_INTERFACE_README.md)** - Web interface guide (ESP8266)
-  - Pin connections and wiring diagrams
-  - WiFi setup (AP and Station modes)
+### Hardware and Troubleshooting
+
+- **[Documentation/HARDWARE_TROUBLESHOOTING.md](Documentation/HARDWARE_TROUBLESHOOTING.md)** - Hardware troubleshooting guide
+  - Thermocouple issues
+  - SSR problems
+  - Wiring verification
+  - Common hardware failures
+
+- **[Documentation/GPIO_PIN_MAPPING.md](Documentation/GPIO_PIN_MAPPING.md)** - Pin mapping reference
+  - Pico W GPIO assignments
+  - ESP8266 pin mapping
+  - SPI bus configuration
+  - Pin change history
+
+- **[Documentation/LED_STATUS_GUIDE.md](Documentation/LED_STATUS_GUIDE.md)** - LED status indicators
+  - What each LED pattern means
+  - Troubleshooting via LED
+  - Status code reference
+
+### Web Interface and WiFi
+
+- **[Documentation/WEB_INTERFACE_README.md](Documentation/WEB_INTERFACE_README.md)** - Web interface guide
   - Web interface usage
-  - SSR control implementation
   - API documentation
+  - WebSocket updates
   - Troubleshooting
 
-- **[ESP8266_SETUP.md](ESP8266_SETUP.md)** - Historical reference for ESP8266 setup
-  - Original migration from Arduino Uno
-  - Pin mapping details
-  - Library compatibility notes
-  - Display version information
+- **[Documentation/CAPTIVE_PORTAL_TROUBLESHOOTING.md](Documentation/CAPTIVE_PORTAL_TROUBLESHOOTING.md)** - WiFi setup troubleshooting
+  - Captive portal issues
+  - Network connection problems
+  - DNS configuration
+
+### Architecture and Implementation
+
+- **[Documentation/ARCHITECTURE_DIAGRAMS.md](Documentation/ARCHITECTURE_DIAGRAMS.md)** - System architecture
+  - Block diagrams
+  - Data flow
+  - Component interactions
+  - Dual-core architecture (Pico W)
+
+- **[Documentation/IMPLEMENTATION_SUMMARY.md](Documentation/IMPLEMENTATION_SUMMARY.md)** - Implementation details
+  - Code structure
+  - Module organization
+  - Design decisions
+
+### Changelog and Version History
+
+- **[Documentation/CHANGELOG.md](Documentation/CHANGELOG.md)** - Complete version history
+  - All releases and changes
+  - Feature additions
+  - Bug fixes
+  - Migration notes
 
 ## Features
 
@@ -300,7 +336,7 @@ The controller includes automatic PID tuning to optimize temperature control:
 6. Copy recommended values to PID inputs
 7. Click **"Save PID Settings"**
 
-See [AUTO_TUNE_FEATURE.md](AUTO_TUNE_FEATURE.md) for detailed instructions.
+See [Documentation/AUTO_TUNE_FEATURE.md](Documentation/AUTO_TUNE_FEATURE.md) for detailed instructions.
 
 ### Emergency Stop
 
@@ -368,15 +404,32 @@ This controller manages high temperatures and AC power:
 ```
 Solder-Reflow-Oven/
 ├── README.md (this file)
-├── WEB_INTERFACE_README.md (detailed web interface documentation)
-├── ESP8266_SETUP.md (ESP8266 migration reference)
+├── PLATFORM_COMPARISON.md (platform selection guide)
+├── Documentation/ (all documentation files)
+│   ├── START_HERE.md
+│   ├── QUICK_REFERENCE.md
+│   ├── PRESET_PROFILES_FEATURE.md
+│   ├── REFLOW_TEMPERATURE_STANDARDS.md
+│   ├── AUTO_TUNE_FEATURE.md
+│   ├── PID_TUNING_GUIDE.md
+│   ├── PLATFORMIO_SETUP.md
+│   ├── CLION_SETUP.md
+│   ├── WEB_INTERFACE_README.md
+│   ├── HARDWARE_TROUBLESHOOTING.md
+│   ├── CHANGELOG.md
+│   └── ... (and more)
+├── src/ (modular source code)
+│   ├── main.cpp
+│   ├── presets.cpp/h (preset profile system)
+│   ├── pid_controller.cpp/h
+│   ├── state_machine.cpp/h
+│   ├── temperature.cpp/h
+│   ├── web_server.cpp/h
+│   └── wifi_setup.cpp/h
 ├── Electrical Design/
-│   ├── SolderReflowOven/
-│   │   ├── SolderReflowOven.ino (main web interface version)
-│   │   └── SolderReflowOven_display_version.ino.bak (original display version backup)
-│   └── ESP8266_MAX31855_Example/
-│       └── ESP8266_MAX31855_Example.ino (thermocouple test sketch)
-├── Bill of Materials (original BOM)
+│   ├── SolderReflowOvenPicoW/ (Pico W version)
+│   └── SolderReflowOven/ (ESP8266 version)
+├── platformio.ini (PlatformIO configuration)
 └── Mechanical Design/
 ```
 
@@ -423,19 +476,22 @@ unsigned long preheatTime = 90000;  // milliseconds
 
 1. **Original**: Arduino Uno + MAX31856 + TFT Display
 2. **Phase 1**: Ported to ESP8266 + MAX31855 + TFT Display (pin conflicts)
-3. **Phase 2**: Removed display, added web interface (current version)
+3. **Phase 2**: Removed display, added web interface
+4. **Phase 3**: Added Pico W support with dual-core architecture
+5. **Phase 4**: Added JEDEC-compliant preset profile system
 
-See ESP8266_SETUP.md for migration details.
+See [Documentation/ESP8266_SETUP.md](Documentation/ESP8266_SETUP.md) for historical migration details.
 
 ## Future Enhancements
 
 Potential improvements:
-- [ ] Temperature curve charting on web interface
-- [ ] Multiple saved reflow profiles
+- [x] ~~Temperature curve charting on web interface~~ (DONE)
+- [x] ~~Multiple saved reflow profiles~~ (DONE - Preset system)
 - [ ] Email/push notifications on completion
 - [ ] MQTT integration
 - [ ] Data export to CSV
 - [ ] Authentication for web interface
+- [ ] Preset import/export
 
 ## Contributing
 
@@ -449,17 +505,20 @@ Open source - use and modify for your projects.
 
 - Original design adapted from various reflow oven projects
 - Web interface migration and ESP8266 port completed for improved usability
+- Pico W dual-core version with 10x faster PID control
+- JEDEC J-STD-020 compliant preset system
 - Uses Adafruit libraries for MAX31855 support
 - PID library by Brett Beauregard
 
 ## Support
 
 For help:
-1. Check Serial Monitor output
-2. Review WEB_INTERFACE_README.md troubleshooting section
-3. Verify wiring matches pin diagram
-4. Test thermocouple with example sketch
-5. Open an issue on GitHub
+1. Check **[Documentation/START_HERE.md](Documentation/START_HERE.md)** for quick start
+2. Review **[Documentation/QUICK_REFERENCE.md](Documentation/QUICK_REFERENCE.md)** for common tasks
+3. Check Serial Monitor output for diagnostic messages
+4. Review **[Documentation/HARDWARE_TROUBLESHOOTING.md](Documentation/HARDWARE_TROUBLESHOOTING.md)**
+5. Verify wiring matches pin diagram
+6. Open an issue on GitHub
 
 ---
 
