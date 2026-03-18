@@ -1,5 +1,79 @@
 # Changelog
 
+## [2.1.1] - 2026-03-18 - Preset Loading Bug Fix
+
+### Fixed
+- **Preset loading UI bug**: Form fields now update immediately when a preset is selected
+  - Fixed promise chain in `loadSelectedPreset()` JavaScript function
+  - Form fields (temperature and time) now update correctly after preset load
+  - Added detailed success alert showing loaded values for verification
+  - Improved error handling and dropdown reset on cancel/error
+  - See `PRESET_LOADING_FIX.md` for technical details
+
+## [2.1.0] - 2026-03-18 - Preset Profile System (JEDEC-Compliant)
+
+### Added - Major Feature
+- **🆕 Preset Profile System**: Save and load temperature profiles for different board types
+  - **5 built-in JEDEC-compliant presets**: Based on J-STD-020 industry standards
+    - Lead-Free Standard (245°C) - JEDEC compliant, 15°C safety margin
+    - Lead-Free Safe (235°C) - Conservative for standard plastic headers
+    - Leaded Solder (220°C) - Center of 210-230°C industry range
+    - Sensitive Components (210°C) - For non-rated or cheap plastics
+    - High Mass Boards (250°C) - Maximum JEDEC lead-free peak
+  - **Custom preset creation**: Save your current settings as named presets
+  - **Prevent component damage**: Temperature presets based on component ratings
+  - **Web UI integration**: Dropdown selector and save/load buttons
+  - **Flash storage**: Presets persist across reboots in `/presets.json`
+  - **REST API endpoints**: `/api/presets`, `/api/presets/load`, `/api/presets/save`, `/api/presets/delete`
+  - **New files**: `src/presets.h`, `src/presets.cpp`
+
+### Documentation Added
+- **PRESET_PROFILES_FEATURE.md**: Complete preset system documentation
+  - Overview of preset system and benefits with JEDEC standards
+  - All default presets with technical specifications
+  - Time at temperature constraints (30-60s maximum)
+  - Component ratings and safety margins
+  - Web interface usage guide
+  - API reference with examples
+  - Best practices and troubleshooting
+
+- **REFLOW_TEMPERATURE_STANDARDS.md**: Industry standards technical reference
+  - JEDEC J-STD-020 compliance details
+  - Temperature ranges by solder type (SAC305, Sn63/Pb37)
+  - Plastic component ratings (260°C MSL 3, 250°C standard, etc.)
+  - Time at temperature constraints (30-60 seconds at peak)
+  - Safety margins (15°C recommended)
+  - Troubleshooting thermal damage (browning, deformation)
+
+- **PRESET_QUICK_START.md**: Quick start guide for presets
+  - Immediate solution for melted component issues
+  - Temperature recommendations by component rating
+  - Step-by-step preset usage
+  - Visual examples and comparisons
+  - Pro tips and troubleshooting
+
+- **PRESET_JEDEC_UPDATE.md**: Summary of JEDEC compliance updates
+  - Temperature changes and justification
+  - Technical standards applied
+  - Component rating analysis
+
+- **PRESET_UI_GUIDE.md**: Visual UI guide for web interface
+  - UI layout and controls
+  - Usage workflows with screenshots
+  - Before/after comparisons
+
+- **PRESET_LOADING_FIX.md**: Bug fix documentation
+
+### Changed
+- Web interface: Added preset dropdown and save controls
+- Updated README.md with preset feature highlights and standards reference
+- Main firmware: Added preset initialization in setup()
+- Preset temperatures updated to JEDEC J-STD-020 standards
+
+### Fixed
+- ArduinoJson deprecation warnings: Replaced `containsKey()` with recommended `is<T>()` method
+- Preset loading: Form fields now update correctly when preset is selected
+
 ## [2.0.0] - 2026-03-17 - Raspberry Pi Pico W Dual-Core Edition
 
 ### Added - Major Platform Addition

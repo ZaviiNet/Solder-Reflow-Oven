@@ -78,24 +78,24 @@ Located in the "⚙️ PID Tuning" section of the web interface.
 - **Kp (Proportional)**: Controls immediate response to temperature error
   - Increase: Faster heating, more aggressive
   - Decrease: Slower heating, more gentle
-  - Default: 2.0
+  - Default: 0.05
 
 - **Ki (Integral)**: Eliminates steady-state error over time
   - Increase: Faster correction of persistent error
   - Decrease: Less aggressive long-term correction
-  - Default: 5.0
+  - Default: 0.001
 
 - **Kd (Derivative)**: Reduces overshoot by dampening rapid changes
   - Increase: Less overshoot, may slow response
   - Decrease: Faster response, may overshoot
-  - Default: 1.0
+  - Default: 0.75
 
 **Manual Tuning Process**:
-1. Start with default values (Kp=2, Ki=5, Kd=1) or auto-tuned values
+1. Start with default values (Kp=0.05, Ki=0.001, Kd=0.75) or auto-tuned values
 2. Run a test reflow cycle and observe the temperature chart
-3. If heating is too slow, increase Kp (try 3.0 or 4.0)
-4. If temperature overshoots target, increase Kd (try 2.0)
-5. If temperature settles below target, increase Ki (try 7.0)
+3. If heating is too slow, increase Kp (try 0.1 or 0.2)
+4. If temperature overshoots target, increase Kd (try 1.0 or 1.5)
+5. If temperature settles below target, increase Ki (try 0.002 or 0.003)
 6. Click "Save PID Settings" to persist changes to EEPROM
 
 **Tips**:
@@ -238,13 +238,13 @@ WARNING: REFLOW timeout - temperature not reached!
 ## Default Values
 
 For reference, the default values are:
-- Kp: 2.0
-- Ki: 5.0
-- Kd: 1.0
+- Kp: 0.05
+- Ki: 0.001
+- Kd: 0.75
 - Temperature threshold: 5°C (temp must be within 5°C of target)
 - Safety timeout: 180 seconds (3 minutes)
 
-These work well for most setups but may need adjustment based on:
+These conservative values are based on auto-tune results and work well for most setups. They prevent overshoot while maintaining reasonable response time. You may need adjustment based on:
 - Oven size and thermal mass
 - Heater wattage
 - Insulation quality

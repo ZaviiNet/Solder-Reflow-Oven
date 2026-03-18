@@ -120,6 +120,27 @@ See **[PLATFORMIO_SETUP.md](PLATFORMIO_SETUP.md)** for detailed instructions.
 
 ### General Guides (Apply to Both Platforms)
 
+- **[PRESET_PROFILES_FEATURE.md](PRESET_PROFILES_FEATURE.md)** - 🆕 **NEW!** Preset profile system
+  - Save and load temperature profiles
+  - 5 built-in JEDEC-compliant presets
+  - Prevent component damage (melted headers, etc.)
+  - Custom preset creation
+  - API reference
+
+- **[REFLOW_TEMPERATURE_STANDARDS.md](REFLOW_TEMPERATURE_STANDARDS.md)** - 🆕 **NEW!** Industry standards reference
+  - JEDEC J-STD-020 compliance details
+  - Temperature ranges by solder type
+  - Plastic component ratings and limitations
+  - Time at temperature constraints (30-60s max)
+  - Safety margins and best practices
+  - Troubleshooting thermal damage
+
+- **[PRESET_QUICK_START.md](PRESET_QUICK_START.md)** - 🆕 **NEW!** Quick start for presets
+  - Immediate solution for heat-sensitive components
+  - Temperature recommendations by component type
+  - Step-by-step preset usage
+  - Pro tips and troubleshooting
+
 - **[PLATFORMIO_SETUP.md](PLATFORMIO_SETUP.md)** - **NEW!** PlatformIO setup and usage guide
   - Why PlatformIO
   - Installation instructions
@@ -172,6 +193,7 @@ See **[PLATFORMIO_SETUP.md](PLATFORMIO_SETUP.md)** for detailed instructions.
 ✅ **Real-Time Monitoring** - Live temperature updates  
 ✅ **Console Logging** - Real-time system messages and tuning progress  
 ✅ **PID Control** - Precise temperature management  
+🆕 **Preset Profiles** - Save and load temperature profiles for different board types (prevents component damage!)
 
 ### Pico W Exclusive Features
 
