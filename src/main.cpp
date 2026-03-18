@@ -68,7 +68,7 @@ unsigned long cooldownTime = 60000;   // 60 seconds
 
 // PID Variables
 double Setpoint = 0, Input = 0, Output = 0;
-double Kp = 2, Ki = 5, Kd = 1;
+double Kp = 1.0, Ki = 0.05, Kd = 5.0;
 PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 
 // LittleFS Configuration
@@ -157,11 +157,16 @@ unsigned long oscillationStartTime = 0;
 double lastPeakTemp = 0;
 double lastValleyTemp = 0;
 unsigned long lastPeakTime = 0;
+unsigned long prevPeakTime = 0;  // For peak-to-peak period measurement
 unsigned long lastValleyTime = 0;
 int oscillationCount = 0;
 double sumOscillationPeriod = 0;
 double sumOscillationAmplitude = 0;
 bool waitingForPeak = true;
+// Per-step oscillation accumulators (reset each temperature)
+double stepSumPeriod = 0;
+double stepSumAmplitude = 0;
+int stepOscillationCount = 0;
 double tuningKu = 0;  // Ultimate gain
 double tuningPu = 0;  // Ultimate period
 double calculatedKp = 0;
@@ -169,7 +174,7 @@ double calculatedKi = 0;
 double calculatedKd = 0;
 
 // Console Log (for PID tuning output)
-const int maxConsoleLines = 50;
+const int maxConsoleLines = 100;
 String consoleLog[maxConsoleLines];
 int consoleLogIndex = 0;
 
@@ -905,6 +910,10 @@ void startPIDTuning() {
     oscillationCount = 0;
     sumOscillationPeriod = 0;
     sumOscillationAmplitude = 0;
+    stepSumPeriod = 0;
+    stepSumAmplitude = 0;
+    stepOscillationCount = 0;
+    prevPeakTime = 0;
     consoleLogIndex = 0;  // Clear console for new tuning session
     dataLogIndex = 0;  // Reset data log
     
@@ -944,12 +953,14 @@ void updatePIDTuningStateMachine() {
       Output = 1;
     } else if (Input >= targetTemp - 2.0) {
       // Temperature reached, move to oscillation test
+      addConsoleLog("Old PID values -> Kp: " + String(Kp, 3) + ", Ki: " + String(Ki, 3) + ", Kd: " + String(Kd, 3));
       tuningStep++;
       tuningStepStartTime = millis();
       oscillationStartTime = millis();
-      oscillationCount = 0;
-      sumOscillationPeriod = 0;
-      sumOscillationAmplitude = 0;
+      stepSumPeriod = 0;
+      stepSumAmplitude = 0;
+      stepOscillationCount = 0;
+      prevPeakTime = 0;
       waitingForPeak = true;
       lastPeakTemp = Input;
       lastValleyTemp = Input;
@@ -983,12 +994,15 @@ void updatePIDTuningStateMachine() {
         lastPeakTemp = Input;
         lastPeakTime = millis();
       } else if (waitingForPeak && Input < lastPeakTemp - 1.0) {
-        // Peak confirmed, calculate oscillation
-        if (oscillationCount > 0) {
-          unsigned long period = lastPeakTime - lastValleyTime;
+        // Peak confirmed — use peak-to-peak period for accurate Pu measurement
+        if (prevPeakTime > 0) {
+          unsigned long period = lastPeakTime - prevPeakTime;  // Peak-to-peak
           double amplitude = lastPeakTemp - lastValleyTemp;
           
           if (period > 1000 && period < 300000 && amplitude > 1.0) {  // Sanity checks
+            stepSumPeriod += period;
+            stepSumAmplitude += amplitude;
+            stepOscillationCount++;
             sumOscillationPeriod += period;
             sumOscillationAmplitude += amplitude;
             oscillationCount++;
@@ -999,25 +1013,40 @@ void updatePIDTuningStateMachine() {
           }
         }
         
+        prevPeakTime = lastPeakTime;  // Save for next peak-to-peak calculation
         waitingForPeak = false;
         lastValleyTemp = Input;
       }
     }
     
-    // Need at least 3 oscillations, or timeout after 10 minutes
-    if (oscillationCount >= 3 || elapsed > 600000) {
-      if (oscillationCount >= 3) {
+    // Need at least 3 oscillations per step, or timeout after 10 minutes
+    if (stepOscillationCount >= 3 || elapsed > 600000) {
+      if (stepOscillationCount >= 3) {
         addConsoleLog("Oscillation test complete at " + String(targetTemp) + "C");
       } else {
         addConsoleLog("Timeout - moving to next temperature");
       }
+      
+      // Log per-step PID estimate if we have data for this step
+      if (stepOscillationCount >= 1) {
+        double stepAvgPeriod = stepSumPeriod / stepOscillationCount / 1000.0;  // seconds
+        double stepAvgAmplitude = stepSumAmplitude / stepOscillationCount;
+        double stepKu = (4.0 * 1.0) / (PI * stepAvgAmplitude);
+        double stepKp = 0.6 * stepKu;
+        double stepKi = 1.2 * stepKu / stepAvgPeriod;
+        double stepKd = 0.075 * stepKu * stepAvgPeriod;
+        addConsoleLog("  Step PID estimate @ " + String(targetTemp, 0) + "C:");
+        addConsoleLog("    New Kp: " + String(stepKp, 3) + 
+                      "  Ki: " + String(stepKi, 3) + 
+                      "  Kd: " + String(stepKd, 3));
+      }
+      addConsoleLog("");
       
       // Move to next temperature or complete
       tuningTempIndex++;
       if (tuningTempIndex < 3) {
         tuningStep++;
         tuningStepStartTime = millis();
-        addConsoleLog("");
         addConsoleLog("Step " + String(tuningStep/2 + 2) + "/6: Heating to " + 
                      String(tuningTargetTemp[tuningTempIndex]) + "C...");
       } else {
@@ -1037,9 +1066,10 @@ void calculatePIDFromAutoTune() {
   addConsoleLog("");
   addConsoleLog("=== Calculating PID Parameters ===");
   
-  if (oscillationCount < 3) {
+  if (oscillationCount < 1) {
     addConsoleLog("ERROR: Not enough oscillation data collected");
     addConsoleLog("Current PID values unchanged");
+    addConsoleLog("Old Kp: " + String(Kp, 3) + "  Ki: " + String(Ki, 3) + "  Kd: " + String(Kd, 3));
     return;
   }
   
@@ -1069,17 +1099,19 @@ void calculatePIDFromAutoTune() {
   calculatedKi = 1.2 * tuningKu / tuningPu;
   calculatedKd = 0.075 * tuningKu * tuningPu;
   
-  addConsoleLog("=== Recommended PID Values (Ziegler-Nichols) ===");
-  addConsoleLog("Kp = " + String(calculatedKp, 3));
-  addConsoleLog("Ki = " + String(calculatedKi, 3));
-  addConsoleLog("Kd = " + String(calculatedKd, 3));
+  addConsoleLog("=== PID Values: Old vs New (Ziegler-Nichols) ===");
+  addConsoleLog("         Old      New");
+  addConsoleLog("  Kp:  " + String(Kp, 3) + "  ->  " + String(calculatedKp, 3));
+  addConsoleLog("  Ki:  " + String(Ki, 3) + "  ->  " + String(calculatedKi, 3));
+  addConsoleLog("  Kd:  " + String(Kd, 3) + "  ->  " + String(calculatedKd, 3));
   addConsoleLog("");
-  addConsoleLog("These values are conservative. You may need to fine-tune:");
-  addConsoleLog("- Increase Kp for faster response");
-  addConsoleLog("- Increase Ki to eliminate steady-state error");
-  addConsoleLog("- Increase Kd to reduce overshoot");
-  addConsoleLog("");
-  addConsoleLog("Copy these values to PID Tuning section and click Save");
+  addConsoleLog("Applying new PID values...");
+  Kp = calculatedKp;
+  Ki = calculatedKi;
+  Kd = calculatedKd;
+  myPID.SetTunings(Kp, Ki, Kd);
+  saveConfigToEEPROM();
+  addConsoleLog("PID values saved to flash.");
   addConsoleLog("");
   addConsoleLog("=== Auto-Tuning Complete ===");
 }
@@ -1400,17 +1432,17 @@ void handleRoot() {
       <div class="pid-grid">
         <div class="config-item">
           <label>Kp (Proportional)</label>
-          <input type="number" id="Kp" value="2" step="0.1" min="0">
+          <input type="number" id="Kp" value="1.0" step="0.1" min="0">
           <div class="help-text">Increase for faster response</div>
         </div>
         <div class="config-item">
           <label>Ki (Integral)</label>
-          <input type="number" id="Ki" value="5" step="0.1" min="0">
+          <input type="number" id="Ki" value="0.05" step="0.05" min="0">
           <div class="help-text">Eliminates steady-state error</div>
         </div>
         <div class="config-item">
           <label>Kd (Derivative)</label>
-          <input type="number" id="Kd" value="1" step="0.1" min="0">
+          <input type="number" id="Kd" value="5.0" step="0.1" min="0">
           <div class="help-text">Reduces overshoot</div>
         </div>
       </div>
@@ -1585,8 +1617,8 @@ void handleRoot() {
         document.getElementById('tuneBtn').textContent = '🔧 Auto-Tune PID';
       }
       
-      // Update chart if reflow is active (but not during tuning)
-      if (isActive && !isTuning) {
+      // Update chart if reflow or tuning is active
+      if (isActive) {
         updateChart(data.temp, data.setpoint, data.elapsed);
       }
       
@@ -1705,6 +1737,7 @@ void handleRoot() {
             .then(data => {
               console.log('Tuning started:', data);
               tuneBtn.textContent = '⏹ Stop Auto-Tune';
+              clearChart();
               document.getElementById('console').classList.add('visible');
               startConsolePolling();
             })
