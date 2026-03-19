@@ -12,8 +12,10 @@
 #include "storage.h"
 #include "presets.h"
 #include "pins.h"
+#include "ota.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <Updater.h>
 #include <pico/bootrom.h>
 
 // Web server instance
@@ -80,6 +82,51 @@ void setupWebServer() {
   server.on("/api/presets/load", HTTP_POST, handleLoadPreset);
   server.on("/api/presets/save", HTTP_POST, handleSavePreset);
   server.on("/api/presets/delete", HTTP_POST, handleDeletePreset);
+
+  // OTA firmware update endpoint
+  server.on(
+    "/api/ota/update", HTTP_POST,
+    []() {
+      server.sendHeader("Connection", "close");
+      if (Update.hasError()) {
+        server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Firmware update failed\"}");
+        Serial.println("HTTP OTA: Update failed");
+      } else {
+        server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Update successful, rebooting...\"}");
+        Serial.println("HTTP OTA: Update successful, rebooting...");
+        delay(REBOOT_DELAY_MS);
+        rp2040.reboot();
+      }
+    },
+    []() {
+      HTTPUpload& upload = server.upload();
+      if (upload.status == UPLOAD_FILE_START) {
+        Serial.print("HTTP OTA: Receiving ");
+        Serial.print(upload.filename);
+        Serial.print(" (");
+        Serial.print(upload.contentLength);
+        Serial.println(" bytes)");
+        if (!Update.begin(upload.contentLength > 0 ? (size_t)upload.contentLength : UPDATE_SIZE_UNKNOWN)) {
+          Update.printError(Serial);
+        }
+      } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+          Update.printError(Serial);
+        }
+      } else if (upload.status == UPLOAD_FILE_END) {
+        if (Update.end(true)) {
+          Serial.print("HTTP OTA: Received ");
+          Serial.print(upload.totalSize);
+          Serial.println(" bytes, finalizing...");
+        } else {
+          Update.printError(Serial);
+        }
+      } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        Update.abort();
+        Serial.println("HTTP OTA: Upload aborted");
+      }
+    }
+  );
 
   // Catch-all
   server.onNotFound(handleNotFound);
@@ -435,6 +482,47 @@ void handleRoot() {
         <div id="consoleContent"></div>
       </div>
     </div>
+
+    <div class="card">
+      <h2>🔄 Firmware Update (OTA)</h2>
+      <div class="status-grid">
+        <div class="status-item">
+          <div class="status-label">Current Version</div>
+          <div class="status-value" id="fwVersion">-</div>
+        </div>
+        <div class="status-item">
+          <div class="status-label">OTA Hostname</div>
+          <div class="status-value" style="font-size:1em;" id="otaHostname">-</div>
+        </div>
+      </div>
+
+      <h3 style="margin:15px 0 8px; color:#555; font-size:1em;">IDE / PlatformIO Network Upload</h3>
+      <p class="help-text">Upload firmware wirelessly using Arduino IDE 2.x or PlatformIO — no USB cable needed.</p>
+      <div style="background:#f8f9fa; border-radius:6px; padding:12px; margin-top:8px; font-family:monospace; font-size:0.85em; word-break:break-all;">
+        <div style="color:#888; margin-bottom:4px;">PlatformIO:</div>
+        <div style="color:#333;" id="pioCommand">pio run -t upload --upload-port reflow-oven.local</div>
+      </div>
+
+      <h3 style="margin:18px 0 8px; color:#555; font-size:1em;">Browser Upload (.bin)</h3>
+      <p class="help-text">Upload a compiled firmware <code>.bin</code> file directly from your browser.</p>
+      <div style="margin-top:12px;">
+        <input type="file" id="otaFile" accept=".bin" style="display:none;" onchange="handleOTAFile(event)">
+        <label for="otaFile" class="btn-save" style="display:inline-block; cursor:pointer; padding:10px 20px;">
+          📁 Choose .bin File
+        </label>
+        <div id="otaFileName" style="color:#666; font-size:0.9em; margin-top:8px;"></div>
+        <div id="otaProgress" style="display:none; margin-top:10px;">
+          <div style="background:#e9ecef; border-radius:4px; height:18px; overflow:hidden; margin-bottom:6px;">
+            <div id="otaProgressBar" style="background:#667eea; height:100%; width:0%; transition:width 0.3s;"></div>
+          </div>
+          <div id="otaProgressText" style="text-align:center; font-size:0.85em; color:#666;"></div>
+        </div>
+        <button id="otaUploadBtn" class="btn-start" style="display:none; margin-top:10px;" onclick="startOTAUpload()">
+          🚀 Upload Firmware
+        </button>
+        <div id="otaStatus" style="margin-top:10px; padding:10px; border-radius:4px; display:none;"></div>
+      </div>
+    </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -588,6 +676,16 @@ void handleRoot() {
 
       if (data.state === 'IDLE' && chartData.labels.length > 0) {
         clearChart();
+      }
+
+      // Update OTA info from status
+      if (data.firmware) {
+        document.getElementById('fwVersion').textContent = 'v' + data.firmware;
+      }
+      if (data.otaHostname) {
+        document.getElementById('otaHostname').textContent = data.otaHostname + '.local';
+        document.getElementById('pioCommand').textContent =
+          'pio run -t upload --upload-port ' + data.otaHostname + '.local';
       }
     }
 
@@ -867,6 +965,77 @@ void handleRoot() {
     connectWebSocket();
     loadConfig();
     loadPresets();
+
+    // ---- OTA functions ----
+    let otaFileData = null;
+
+    function handleOTAFile(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      otaFileData = file;
+      document.getElementById('otaFileName').textContent =
+        'Selected: ' + file.name + ' (' + Math.round(file.size / 1024) + ' KB)';
+      document.getElementById('otaUploadBtn').style.display = 'inline-block';
+    }
+
+    function startOTAUpload() {
+      if (!otaFileData) {
+        alert('Please select a firmware .bin file first.');
+        return;
+      }
+      if (!confirm('Are you sure you want to upload new firmware?\nThe device will restart after the update.')) return;
+
+      const progressEl   = document.getElementById('otaProgress');
+      const progressBar  = document.getElementById('otaProgressBar');
+      const progressText = document.getElementById('otaProgressText');
+      const statusEl     = document.getElementById('otaStatus');
+      const uploadBtn    = document.getElementById('otaUploadBtn');
+
+      progressEl.style.display = 'block';
+      progressBar.style.width  = '0%';
+      progressText.textContent = 'Uploading...';
+      statusEl.style.display   = 'none';
+      uploadBtn.disabled = true;
+
+      const formData = new FormData();
+      formData.append('firmware', otaFileData, otaFileData.name);
+
+      const xhr = new XMLHttpRequest();
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          progressBar.style.width  = pct + '%';
+          progressText.textContent = pct + '% (' + Math.round(e.loaded / 1024) + ' / ' + Math.round(e.total / 1024) + ' KB)';
+        }
+      });
+      xhr.addEventListener('load', () => {
+        if (xhr.status === 200) {
+          progressBar.style.width  = '100%';
+          progressText.textContent = 'Upload complete!';
+          statusEl.style.display   = 'block';
+          statusEl.style.background = '#d4edda';
+          statusEl.style.color      = '#155724';
+          statusEl.textContent = '✅ Firmware update successful! The device is rebooting...';
+        } else {
+          progressEl.style.display = 'none';
+          statusEl.style.display   = 'block';
+          statusEl.style.background = '#f8d7da';
+          statusEl.style.color      = '#721c24';
+          statusEl.textContent = '❌ Update failed: ' + (xhr.responseText || 'Unknown error');
+          uploadBtn.disabled = false;
+        }
+      });
+      xhr.addEventListener('error', () => {
+        progressEl.style.display = 'none';
+        statusEl.style.display   = 'block';
+        statusEl.style.background = '#f8d7da';
+        statusEl.style.color      = '#721c24';
+        statusEl.textContent = '❌ Upload error. Check your connection and try again.';
+        uploadBtn.disabled = false;
+      });
+      xhr.open('POST', '/api/ota/update');
+      xhr.send(formData);
+    }
   </script>
 </body>
 </html>
@@ -1094,6 +1263,8 @@ void handleStatus() {
   doc["ssr"] = digitalRead(SSR_PIN);
   doc["output"] = getPIDOutput();
   doc["tuning"] = isPIDTuningActive();
+  doc["firmware"] = FIRMWARE_VERSION;
+  doc["otaHostname"] = OTA_HOSTNAME;
 
   String response;
   serializeJson(doc, response);
