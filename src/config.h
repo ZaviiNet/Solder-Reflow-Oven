@@ -8,6 +8,13 @@
 
 #include <Arduino.h>
 
+// Firmware Version
+#define FIRMWARE_VERSION "2.2.0"
+
+// OTA Configuration
+#define OTA_HOSTNAME "reflow-oven"
+// #define OTA_PASSWORD "reflowOTA"  // Uncomment to require a password for OTA
+
 // WiFi Configuration
 #define AP_SSID "ReflowOven-Setup"
 #define DNS_PORT 53

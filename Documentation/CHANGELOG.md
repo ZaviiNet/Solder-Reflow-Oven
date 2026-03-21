@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.2.0] - 2026-03-19 - Over-The-Air (OTA) Firmware Updates
+
+### Added - Major Feature
+- **🆕 OTA Update System**: Update firmware over WiFi — no USB cable required
+  - **ArduinoOTA support**: Upload firmware directly from Arduino IDE 2.x or PlatformIO
+    - Device advertises as `reflow-oven.local` via mDNS
+    - PlatformIO command: `pio run -t upload --upload-port reflow-oven.local`
+    - Optional password protection via `OTA_PASSWORD` in `src/config.h`
+  - **Browser-based HTTP upload**: Upload a compiled `.bin` file directly from the web UI
+    - New endpoint: `POST /api/ota/update` — accepts multipart firmware upload
+    - Real-time upload progress bar in the web interface
+    - Device reboots automatically after a successful update
+  - **Firmware version display**: Current version shown in the web UI and `/api/status`
+  - **New files**: `src/ota.h`, `src/ota.cpp`
+  - **OTA only active in Station mode**: ArduinoOTA is skipped when in captive-portal AP mode
+
+### Changed
+- `/api/status` response now includes `firmware` (version string) and `otaHostname` fields
+- `FIRMWARE_VERSION` constant added to `src/config.h` (set to `"2.2.0"`)
+- `OTA_HOSTNAME` constant added to `src/config.h` (default `"reflow-oven"`)
+
 ## [2.1.1] - 2026-03-18 - Preset Loading Bug Fix
 
 ### Fixed

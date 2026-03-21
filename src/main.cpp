@@ -27,6 +27,7 @@
 #include "wifi_setup.h"
 #include "web_server.h"
 #include "state_machine.h"
+#include "ota.h"
 
 // Timing variables
 unsigned long lastTempCheck = 0;
@@ -75,6 +76,11 @@ void setup() {
   // Setup WiFi
   setupWiFi();
 
+  // Initialize OTA (after WiFi is connected)
+  if (!isCaptivePortalActive()) {
+    initOTA();
+  }
+
   // Set LED to solid on once WiFi is connected
   setLED(true);
 
@@ -95,6 +101,9 @@ void setup() {
 }
 
 void loop() {
+  // Process ArduinoOTA requests
+  processOTA();
+
   // Process DNS queries for captive portal
   processDNSRequests();
 
